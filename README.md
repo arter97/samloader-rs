@@ -60,3 +60,9 @@ Heimdall-frontend, can be found in the doc/ folder.
 
 For more details on the Odin protocol, and the PIT files, see the
 external project [samsung-loki/samsung-docs](https://samsung-loki.github.io/samsung-docs/).
+
+### License
+
+This project is a derivative work of [~grimler/Heimdall](https://git.sr.ht/~grimler/Heimdall).
+The original C++ code is licensed under the MIT License.
+The Rust rewrite and all new contributions are licensed under the Apache License, Version 2.0.

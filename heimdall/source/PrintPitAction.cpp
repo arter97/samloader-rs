@@ -26,7 +26,6 @@
 #include "BridgeManager.h"
 #include "Heimdall.h"
 #include "Interface.h"
-#include "PrintPitAction.h"
 
 using namespace std;
 using namespace libpit;

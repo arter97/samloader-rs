@@ -26,7 +26,6 @@
 #include "BridgeManager.h"
 #include "EndModemFileTransferPacket.h"
 #include "EndPhoneFileTransferPacket.h"
-#include "FlashAction.h"
 #include "Heimdall.h"
 #include "Interface.h"
 #include "SessionSetupResponse.h"

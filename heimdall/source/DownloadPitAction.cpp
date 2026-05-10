@@ -24,7 +24,6 @@
 // Heimdall
 #include "ActionInterfaces.h"
 #include "BridgeManager.h"
-#include "DownloadPitAction.h"
 #include "Heimdall.h"
 #include "Interface.h"
 

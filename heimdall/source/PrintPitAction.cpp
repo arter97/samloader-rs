@@ -22,7 +22,7 @@
 #include <stdio.h>
 
 // Heimdall
-#include "Arguments.h"
+#include "ActionInterfaces.h"
 #include "BridgeManager.h"
 #include "Heimdall.h"
 #include "Interface.h"
@@ -32,167 +32,102 @@ using namespace std;
 using namespace libpit;
 using namespace Heimdall;
 
-const char *PrintPitAction::usage = "Action: print-pit\n\
-Arguments: [--file <filename>] [--verbose] [--no-reboot] [--stdout-errors]\n\
-    [--usb-log-level <none/error/warning/debug>] [--wait]\n\
-Description: Prints the contents of a PIT file in a human readable format. If\n\
-    a filename is not provided then Heimdall retrieves the PIT file from the \n\
-    connected device. If --wait is used then Heimdall waits until a compatible\n\
-    device is connected.\n\
-Note: --no-reboot causes the device to remain in download mode after the action\n\
-      is completed. If you wish to perform another action whilst remaining in\n\
-      download mode, then the following action must specify the --resume flag.\n";
 
-int PrintPitAction::Execute(int argc, char **argv)
+int Heimdall::action_print_pit(rust::Str file, bool no_reboot, bool resume, bool verbose, bool wait, bool stdout_errors, rust::Str usb_log_level)
 {
-	// Handle arguments
+        string filename(file.data(), file.length());
 
-	map<string, ArgumentType> argumentTypes;
-	argumentTypes["file"] = kArgumentTypeString;
-	argumentTypes["no-reboot"] = kArgumentTypeFlag;
-	argumentTypes["resume"] = kArgumentTypeFlag;
-	argumentTypes["verbose"] = kArgumentTypeFlag;
-	argumentTypes["wait"] = kArgumentTypeFlag;
-	argumentTypes["stdout-errors"] = kArgumentTypeFlag;
-	argumentTypes["usb-log-level"] = kArgumentTypeString;
+        bool reboot = !no_reboot;
+        bool waitForDevice = wait;
 
-	Arguments arguments(argumentTypes);
+        if (stdout_errors)
+                Interface::SetStdoutErrors(true);
 
-	if (!arguments.ParseArguments(argc, argv, 2))
-	{
-		Interface::Print(PrintPitAction::usage);
-		return (0);
-	}
+        BridgeManager::UsbLogLevel usbLogLevel;
+        if (!parse_usb_log_level(usb_log_level, usbLogLevel))
+                return (0);
 
-	const StringArgument *fileArgument = static_cast<const StringArgument *>(arguments.GetArgument("file"));
+        // Open file (if specified).
 
-	bool reboot = arguments.GetArgument("no-reboot") == nullptr;
-	bool resume = arguments.GetArgument("resume") != nullptr;
-	bool verbose = arguments.GetArgument("verbose") != nullptr;
-	bool waitForDevice = arguments.GetArgument("wait") != nullptr;
+        FILE *localPitFile = nullptr;
 
-	if (arguments.GetArgument("stdout-errors") != nullptr)
-		Interface::SetStdoutErrors(true);
+        if (!filename.empty())
+        {
+                localPitFile = FileOpen(filename.c_str(), "rb");
 
-	const StringArgument *usbLogLevelArgument = static_cast<const StringArgument *>(arguments.GetArgument("usb-log-level"));
+                if (!localPitFile)
+                {
+                        Interface::PrintError("Failed to open file \"%s\"\n", filename.c_str());
+                        return (1);
+                }
+        }
 
-	BridgeManager::UsbLogLevel usbLogLevel = BridgeManager::UsbLogLevel::Default;
+        // Info
 
-	if (usbLogLevelArgument)
-	{
-		const string& usbLogLevelString = usbLogLevelArgument->GetValue();
+        Interface::PrintReleaseInfo();
+        Sleep(1000);
 
-		if (usbLogLevelString.compare("none") == 0 || usbLogLevelString.compare("NONE") == 0)
-		{
-			usbLogLevel = BridgeManager::UsbLogLevel::None;
-		}
-		else if (usbLogLevelString.compare("error") == 0 || usbLogLevelString.compare("ERROR") == 0)
-		{
-			usbLogLevel = BridgeManager::UsbLogLevel::Error;
-		}
-		else if (usbLogLevelString.compare("warning") == 0 || usbLogLevelString.compare("WARNING") == 0)
-		{
-			usbLogLevel = BridgeManager::UsbLogLevel::Warning;
-		}
-		else if (usbLogLevelString.compare("info") == 0 || usbLogLevelString.compare("INFO") == 0)
-		{
-			usbLogLevel = BridgeManager::UsbLogLevel::Info;
-		}
-		else if (usbLogLevelString.compare("debug") == 0 || usbLogLevelString.compare("DEBUG") == 0)
-		{
-			usbLogLevel = BridgeManager::UsbLogLevel::Debug;
-		}
-		else
-		{
-			Interface::Print("Unknown USB log level: %s\n\n", usbLogLevelString.c_str());
-			Interface::Print(PrintPitAction::usage);
-			return (0);
-		}
-	}
+        if (localPitFile)
+        {
+                // Print PIT from file; there's no need for a BridgeManager.
 
-	// Open file (if specified).
+                FileSeek(localPitFile, 0, SEEK_END);
+                unsigned int localPitFileSize = (unsigned int)FileTell(localPitFile);
+                FileRewind(localPitFile);
 
-	FILE *localPitFile = nullptr;
+                // Load the local pit file into memory.
+                unsigned char *pitFileBuffer = new unsigned char[localPitFileSize];
+                fread(pitFileBuffer, 1, localPitFileSize, localPitFile);
+                FileClose(localPitFile);
 
-	if (fileArgument)
-	{
-		const char *filename = fileArgument->GetValue().c_str();
+                auto pitData = new_pit_data();
+                pitData->Unpack({pitFileBuffer, (size_t)localPitFileSize});
 
-		localPitFile = FileOpen(filename, "rb");
+                delete [] pitFileBuffer;
 
-		if (!localPitFile)
-		{
-			Interface::PrintError("Failed to open file \"%s\"\n", filename);
-			return (1);
-		}
-	}
+                Interface::PrintPit(*pitData);
 
-	// Info
+                return (0);
+        }
+        else
+        {
+                // Print PIT from a device.
 
-	Interface::PrintReleaseInfo();
-	Sleep(1000);
+                BridgeManager *bridgeManager = new BridgeManager(verbose, waitForDevice);
+                bridgeManager->SetUsbLogLevel(usbLogLevel);
 
-	if (localPitFile)
-	{
-		// Print PIT from file; there's no need for a BridgeManager.
+                if (bridgeManager->Initialise(resume) != BridgeManager::kInitialiseSucceeded || !bridgeManager->BeginSession())
+                {
+                        delete bridgeManager;
+                        return (1);
+                }
 
-		FileSeek(localPitFile, 0, SEEK_END);
-		unsigned int localPitFileSize = (unsigned int)FileTell(localPitFile);
-		FileRewind(localPitFile);
+                unsigned char *devicePit = nullptr;
+                int devicePitSize = bridgeManager->DownloadPitFile(&devicePit);
+                bool success = devicePitSize != 0;
 
-		// Load the local pit file into memory.
-		unsigned char *pitFileBuffer = new unsigned char[localPitFileSize];
-	        fread(pitFileBuffer, 1, localPitFileSize, localPitFile);
-		FileClose(localPitFile);
+                if (success)
+                {
+                        auto pitData = new_pit_data();
 
-		auto pitData = new_pit_data();
-		pitData->Unpack({pitFileBuffer, (size_t)localPitFileSize});
+                        if (pitData->Unpack({devicePit, (size_t)devicePitSize}))
+                        {
+                                Interface::PrintPit(*pitData);
+                        }
+                        else
+                        {
+                                Interface::PrintError("Failed to unpack device's PIT file!\n");
+                                success = false;
+                        }
+                }
 
-		delete [] pitFileBuffer;
+                delete [] devicePit;
 
-		Interface::PrintPit(*pitData);
+                if (!bridgeManager->EndSession(reboot))
+                        success = false;
 
-		return (0);
-	}
-	else
-	{
-		// Print PIT from a device.
+                delete bridgeManager;
 
-		BridgeManager *bridgeManager = new BridgeManager(verbose, waitForDevice);
-		bridgeManager->SetUsbLogLevel(usbLogLevel);
-
-		if (bridgeManager->Initialise(resume) != BridgeManager::kInitialiseSucceeded || !bridgeManager->BeginSession())
-		{
-			delete bridgeManager;
-			return (1);
-		}
-
-		unsigned char *devicePit;
-		int devicePitSize = bridgeManager->DownloadPitFile(&devicePit);
-		bool success = devicePitSize != 0;
-
-		if (success)
-		{
-			auto pitData = new_pit_data();
-
-			if (pitData->Unpack({devicePit, (size_t)devicePitSize}))
-			{
-				Interface::PrintPit(*pitData);
-			}
-			else
-			{
-				Interface::PrintError("Failed to unpack device's PIT file!\n");
-				success = false;
-			}
-		}
-
-		delete [] devicePit;
-
-		if (!bridgeManager->EndSession(reboot))
-			success = false;
-
-		delete bridgeManager;
-
-		return (success ? 0 : 1);
-	}
+                return (success ? 0 : 1);
+        }
 }

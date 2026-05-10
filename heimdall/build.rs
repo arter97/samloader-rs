@@ -129,22 +129,20 @@ fn check_fseeko(build: &mut cc::Build) {
 }
 
 fn main() {
-    let mut build = cxx_build::bridges(["src/bridge.rs", "../libpit/src/lib.rs"]);
+    let mut build = cxx_build::bridges(["src/main.rs", "../libpit/src/lib.rs"]);
     build.cpp(true);
     build.std("c++11");
 
     // Source files
     let sources = [
-        "source/Arguments.cpp",
-        "source/BridgeManager.cpp",
+        "source/ActionInterfaces.cpp",
         "source/ClosePcScreenAction.cpp",
+        "source/BridgeManager.cpp",
         "source/DetectAction.cpp",
         "source/DownloadPitAction.cpp",
         "source/FlashAction.cpp",
-        "source/HelpAction.cpp",
         "source/InfoAction.cpp",
         "source/Interface.cpp",
-        "source/main.cpp",
         "source/PrintPitAction.cpp",
         "source/Utility.cpp",
         "source/VersionAction.cpp",

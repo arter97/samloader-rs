@@ -25,7 +25,6 @@ namespace Heimdall
 {
 	namespace DetectAction
 	{
-		extern const char *usage;
 
 		int Execute(int argc, char **argv);
 	}

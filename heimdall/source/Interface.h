@@ -33,48 +33,24 @@
 
 namespace Heimdall
 {
-	namespace Interface
-	{
-		typedef int (*ActionExecuteFunction)(int, char **);
+        namespace Interface
+        {
+                void Print(const char *format, ...);
+                void PrintWarning(const char *format, ...);
+                void PrintWarningSameLine(const char *format, ...);
+                void PrintError(const char *format, ...);
+                void PrintErrorSameLine(const char *format, ...);
 
-		typedef struct ActionInfo
-		{
-			ActionExecuteFunction executeFunction;
-			const char *usage;
+                void PrintVersion(void);
+                void PrintReleaseInfo(void);
+                void PrintFullInfo(void);
 
-			ActionInfo()
-			{
-				executeFunction = nullptr;
-				usage = nullptr;
-			}
+                void PrintDeviceDetectionFailed(void);
 
-			ActionInfo(ActionExecuteFunction executeFunction, const char *usage)
-			{
-				this->executeFunction = executeFunction;
-				this->usage = usage;
-			}
+                void PrintPit(const libpit::PitData& pitData);
 
-		} ActionInfo;
-
-		const std::map<std::string, ActionInfo>& GetActionMap(void);
-
-		void Print(const char *format, ...);
-		void PrintWarning(const char *format, ...);
-		void PrintWarningSameLine(const char *format, ...);
-		void PrintError(const char *format, ...);
-		void PrintErrorSameLine(const char *format, ...);
-
-		void PrintVersion(void);
-		void PrintUsage(void);
-		void PrintReleaseInfo(void);
-		void PrintFullInfo(void);
-
-		void PrintDeviceDetectionFailed(void);
-
-		void PrintPit(const libpit::PitData& pitData);
-
-		void SetStdoutErrors(bool enabled);
-	}
+                void SetStdoutErrors(bool enabled);
+        }
 }
 
 #endif

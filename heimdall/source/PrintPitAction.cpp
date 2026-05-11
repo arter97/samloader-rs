@@ -42,10 +42,6 @@ int Heimdall::action_print_pit(rust::Str file, bool no_reboot, bool resume, bool
         if (stdout_errors)
                 Interface::SetStdoutErrors(true);
 
-        BridgeManager::UsbLogLevel usbLogLevel;
-        if (!parse_usb_log_level(usb_log_level, usbLogLevel))
-                return (0);
-
         // Open file (if specified).
 
         FILE *localPitFile = nullptr;
@@ -93,7 +89,7 @@ int Heimdall::action_print_pit(rust::Str file, bool no_reboot, bool resume, bool
                 // Print PIT from a device.
 
                 BridgeManager *bridgeManager = new BridgeManager(verbose, waitForDevice);
-                bridgeManager->SetUsbLogLevel(usbLogLevel);
+                bridgeManager->SetUsbLogLevel(usb_log_level);
 
                 if (bridgeManager->Initialise(resume) != BridgeManager::kInitialiseSucceeded || !bridgeManager->BeginSession())
                 {

@@ -135,7 +135,6 @@ fn main() {
 
     // Source files
     let sources = [
-        "source/ActionInterfaces.cpp",
         "source/ClosePcScreenAction.cpp",
         "source/BridgeManager.cpp",
         "source/DetectAction.cpp",

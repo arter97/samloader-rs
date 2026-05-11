@@ -413,10 +413,6 @@ int Heimdall::action_flash(bool repartition, bool no_reboot, bool resume, bool v
         if (stdout_errors)
                 Interface::SetStdoutErrors(true);
 
-        BridgeManager::UsbLogLevel usbLogLevel;
-        if (!parse_usb_log_level(usb_log_level, usbLogLevel))
-                return (0);
-
         string pitStr(pit.data(), pit.length());
 
         if (repartition && pitStr.empty())
@@ -450,7 +446,7 @@ int Heimdall::action_flash(bool repartition, bool no_reboot, bool resume, bool v
         // Perform flash
 
         BridgeManager *bridgeManager = new BridgeManager(verbose, waitForDevice);
-        bridgeManager->SetUsbLogLevel(usbLogLevel);
+        bridgeManager->SetUsbLogLevel(usb_log_level);
 
         if (bridgeManager->Initialise(resume) != BridgeManager::kInitialiseSucceeded || !bridgeManager->BeginSession())
         {

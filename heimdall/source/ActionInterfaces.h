@@ -30,8 +30,6 @@
 
 namespace Heimdall
 {
-	bool parse_usb_log_level(rust::Str usb_log_level, BridgeManager::UsbLogLevel& outLogLevel);
-
 	int action_close_pc_screen(bool no_reboot, bool resume, bool verbose, bool stdout_errors, rust::Str usb_log_level);
 	int action_detect(bool verbose, bool wait, bool stdout_errors, rust::Str usb_log_level);
 	int action_download_pit(rust::Str output, bool no_reboot, bool resume, bool verbose, bool wait, bool stdout_errors, rust::Str usb_log_level);

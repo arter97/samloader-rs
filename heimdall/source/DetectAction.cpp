@@ -33,12 +33,8 @@ int Heimdall::action_detect(bool verbose, bool wait, bool stdout_errors, rust::S
         if (stdout_errors)
                 Interface::SetStdoutErrors(true);
 
-        BridgeManager::UsbLogLevel usbLogLevel;
-        if (!parse_usb_log_level(usb_log_level, usbLogLevel))
-                return (0);
-
         BridgeManager *bridgeManager = new BridgeManager(verbose, wait);
-        bridgeManager->SetUsbLogLevel(usbLogLevel);
+        bridgeManager->SetUsbLogLevel(usb_log_level);
 
         bool detected = bridgeManager->DetectDevice();
 

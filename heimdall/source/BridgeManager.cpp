@@ -1,15 +1,15 @@
 /* Copyright (c) 2010-2017 Benjamin Dobell, Glass Echidna
- 
+
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
  in the Software without restriction, including without limitation the rights
  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  copies of the Software, and to permit persons to whom the Software is
  furnished to do so, subject to the following conditions:
- 
+
  The above copyright notice and this permission notice shall be included in
  all copies or substantial portions of the Software.
- 
+
  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -322,16 +322,11 @@ bool BridgeManager::InitialiseProtocol(void)
 	memcpy(dataBuffer, "ODIN", 4);
 	memset(dataBuffer + 4, 0, 1);
 
-#ifdef OS_LINUX
-	if (IsUbuntu())
+	Interface::Print("Resetting device...\n");
+	if (libusb_reset_device(deviceHandle))
 	{
-		Interface::Print("Resetting device...\n");
-		if (libusb_reset_device(deviceHandle))
-		{
-			Interface::PrintError("Failed to reset device!\n");
-		}
+		Interface::PrintError("Failed to reset device!\n");
 	}
-#endif
 
 	if (!SendBulkTransfer(dataBuffer, 4, 1000))
 	{
@@ -397,7 +392,7 @@ BridgeManager::BridgeManager(bool verbose, bool waitForDevice)
 	fileTransferPacketSize = kFileTransferPacketSizeDefault;
 	fileTransferSequenceTimeout = kFileTransferSequenceTimeoutDefault;
 
-	usbLogLevel = UsbLogLevel::Default;
+	usbLogLevel = LIBUSB_LOG_LEVEL_ERROR;
 }
 
 BridgeManager::~BridgeManager()
@@ -430,7 +425,7 @@ bool BridgeManager::DetectDevice(void)
 		Interface::Print("Waiting for device...\n");
 
 	// Set libusb log level.
-	SetUsbLogLevel(usbLogLevel);
+	libusb_set_option(libusbContext, LIBUSB_OPTION_LOG_LEVEL, usbLogLevel);
 
 	struct libusb_device **devices;
 	unsigned int deviceCount, deviceIndex, i;
@@ -483,8 +478,8 @@ int BridgeManager::Initialise(bool resume)
 	// Fixes LIBUSB_ERROR_NOT_FOUND when using dg_ssudbus driver instead of WinUSB.
 	libusb_set_option(libusbContext, LIBUSB_OPTION_USE_USBDK);
 
-	// Setup libusb log level.
-	SetUsbLogLevel(usbLogLevel);
+	// Set libusb log level.
+	libusb_set_option(libusbContext, LIBUSB_OPTION_LOG_LEVEL, usbLogLevel);
 
 	result = FindDeviceInterface();
 
@@ -1237,62 +1232,39 @@ bool BridgeManager::SendFile(FILE *file, unsigned int destination, unsigned int 
 	return (true);
 }
 
-void BridgeManager::SetUsbLogLevel(UsbLogLevel usbLogLevel)
+void BridgeManager::SetUsbLogLevel(rust::Str usb_log_level)
 {
-	this->usbLogLevel = usbLogLevel;
-
+	std::string usbLogLevelString(usb_log_level.data(), usb_log_level.length());
+	if (!usbLogLevelString.empty())
+	{
+		if (usbLogLevelString.compare("none") == 0 || usbLogLevelString.compare("NONE") == 0)
+		{
+			usbLogLevel = LIBUSB_LOG_LEVEL_NONE;
+		}
+		else if (usbLogLevelString.compare("error") == 0 || usbLogLevelString.compare("ERROR") == 0)
+		{
+			usbLogLevel = LIBUSB_LOG_LEVEL_ERROR;
+		}
+		else if (usbLogLevelString.compare("warning") == 0 || usbLogLevelString.compare("WARNING") == 0)
+		{
+			usbLogLevel = LIBUSB_LOG_LEVEL_WARNING;
+		}
+		else if (usbLogLevelString.compare("info") == 0 || usbLogLevelString.compare("INFO") == 0)
+		{
+			usbLogLevel = LIBUSB_LOG_LEVEL_INFO;
+		}
+		else if (usbLogLevelString.compare("debug") == 0 || usbLogLevelString.compare("DEBUG") == 0)
+		{
+			usbLogLevel = LIBUSB_LOG_LEVEL_DEBUG;
+		}
+		else
+		{
+			Interface::Print("Unknown USB log level: %s\n\n", usbLogLevelString.c_str());
+			return;
+		}
+	}
 	if (libusbContext)
 	{
-		switch (usbLogLevel)
-		{
-			case UsbLogLevel::None:
-				libusb_set_option(libusbContext, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_NONE);
-				break;
-
-			case UsbLogLevel::Error:
-				libusb_set_option(libusbContext, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_ERROR);
-				break;
-
-			case UsbLogLevel::Warning:
-				libusb_set_option(libusbContext, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_WARNING);
-				break;
-
-			case UsbLogLevel::Info:
-				libusb_set_option(libusbContext, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_INFO);
-				break;
-
-			case UsbLogLevel::Debug:
-				libusb_set_option(libusbContext, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_DEBUG);
-				break;
-		}
+		libusb_set_option(libusbContext, LIBUSB_OPTION_LOG_LEVEL, usbLogLevel);
 	}
 }
-
-#ifdef OS_LINUX
-bool BridgeManager::IsUbuntu()
-{
-	std::ifstream os_release("/etc/os-release");
-	std::string line, entry, os;
-	int pos;
-	while (std::getline(os_release, line))
-	{
-		pos = line.find("=");
-		entry = line.substr(0, pos);
-		if (entry == "ID")
-		{
-			os = line.substr(pos+1);
-			if (verbose)
-			{
-				Interface::Print("Linux distro ID: %s\n",
-						 os.c_str());
-			}
-			if (os == "ubuntu")
-			{
-				return true;
-			}
-			break;
-		}
-	}
-	return false;
-}
-#endif

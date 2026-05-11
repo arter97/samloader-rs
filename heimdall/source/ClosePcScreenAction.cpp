@@ -30,10 +30,6 @@ using namespace Heimdall;
 
 int Heimdall::action_close_pc_screen(bool no_reboot, bool resume, bool verbose, bool stdout_errors, rust::Str usb_log_level)
 {
-        BridgeManager::UsbLogLevel usbLogLevel;
-        if (!parse_usb_log_level(usb_log_level, usbLogLevel))
-                return (0);
-
         bool reboot = !no_reboot;
 
         if (stdout_errors)
@@ -45,7 +41,7 @@ int Heimdall::action_close_pc_screen(bool no_reboot, bool resume, bool verbose, 
 
         // Download PIT file from device.
         BridgeManager *bridgeManager = new BridgeManager(verbose, false);
-        bridgeManager->SetUsbLogLevel(usbLogLevel);
+        bridgeManager->SetUsbLogLevel(usb_log_level);
 
         if (bridgeManager->Initialise(resume) != BridgeManager::kInitialiseSucceeded || !bridgeManager->BeginSession())
         {

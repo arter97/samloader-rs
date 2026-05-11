@@ -1,15 +1,15 @@
 /* Copyright (c) 2010-2017 Benjamin Dobell, Glass Echidna
- 
+
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
  in the Software without restriction, including without limitation the rights
  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  copies of the Software, and to permit persons to whom the Software is
  furnished to do so, subject to the following conditions:
- 
+
  The above copyright notice and this permission notice shall be included in
  all copies or substantial portions of the Software.
- 
+
  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -85,16 +85,6 @@ namespace Heimdall
 				kDefaultTimeoutEmptyTransfer = 100
 			};
 
-			enum class UsbLogLevel
-			{
-				None = 0,
-				Error,
-				Warning,
-				Info,
-				Debug,
-
-				Default = Error
-			};
 
 			enum
 			{
@@ -132,7 +122,7 @@ namespace Heimdall
 			unsigned int fileTransferPacketSize;
 			unsigned int fileTransferSequenceTimeout;
 
-			UsbLogLevel usbLogLevel;
+			int usbLogLevel;
 
 			int FindDeviceInterface(void);
 			bool ClaimDeviceInterface(void);
@@ -166,14 +156,7 @@ namespace Heimdall
 
 			bool SendFile(FILE *file, unsigned int destination, unsigned int deviceType, unsigned int fileIdentifier = 0xFFFFFFFF) const;
 
-			void SetUsbLogLevel(UsbLogLevel usbLogLevel);
-#ifdef OS_LINUX
-			bool IsUbuntu(void);
-#endif
-			UsbLogLevel GetUsbLogLevel(void) const
-			{
-				return usbLogLevel;
-			}
+			void SetUsbLogLevel(rust::Str usb_log_level);
 
 			bool IsVerbose(void) const
 			{

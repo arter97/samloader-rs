@@ -102,92 +102,24 @@ pub struct PitData {
 }
 
 impl PitEntry {
-    fn is_flashable(&self) -> bool {
-        !self.partition_name.is_empty()
-    }
-
     fn get_binary_type(&self) -> u32 {
         self.binary_type
-    }
-    fn set_binary_type(&mut self, val: u32) {
-        self.binary_type = val;
     }
 
     fn get_device_type(&self) -> u32 {
         self.device_type
     }
-    fn set_device_type(&mut self, val: u32) {
-        self.device_type = val;
-    }
 
     fn get_identifier(&self) -> u32 {
         self.identifier
-    }
-    fn set_identifier(&mut self, val: u32) {
-        self.identifier = val;
-    }
-
-    fn get_attributes(&self) -> u32 {
-        self.attributes
-    }
-    fn set_attributes(&mut self, val: u32) {
-        self.attributes = val;
-    }
-
-    fn get_update_attributes(&self) -> u32 {
-        self.update_attributes
-    }
-    fn set_update_attributes(&mut self, val: u32) {
-        self.update_attributes = val;
-    }
-
-    fn get_block_size_or_offset(&self) -> u32 {
-        self.block_size_or_offset
-    }
-    fn set_block_size_or_offset(&mut self, val: u32) {
-        self.block_size_or_offset = val;
     }
 
     fn get_block_count(&self) -> u32 {
         self.block_count
     }
-    fn set_block_count(&mut self, val: u32) {
-        self.block_count = val;
-    }
-
-    fn get_file_offset(&self) -> u32 {
-        self.file_offset
-    }
-    fn set_file_offset(&mut self, val: u32) {
-        self.file_offset = val;
-    }
-
-    fn get_file_size(&self) -> u32 {
-        self.file_size
-    }
-    fn set_file_size(&mut self, val: u32) {
-        self.file_size = val;
-    }
 
     fn get_partition_name(&self) -> String {
         self.partition_name.clone()
-    }
-    fn set_partition_name(&mut self, name: &str) {
-        self.partition_name = name.to_string();
-    }
-
-    fn get_flash_filename(&self) -> String {
-        self.flash_filename.clone()
-    }
-    fn set_flash_filename(&mut self, name: &str) {
-        self.flash_filename = name.to_string();
-    }
-
-    fn get_fota_filename(&self) -> String {
-        self.fota_filename.clone()
-    }
-    fn set_fota_filename(&mut self, name: &str) {
-        self.fota_filename = name.to_string();
     }
 }
 
@@ -233,26 +165,6 @@ impl PitData {
             padded_size += PADDED_SIZE_MULTIPLICAND;
         }
         padded_size
-    }
-
-    fn get_entry_count(&self) -> u32 {
-        self.entries.len() as u32
-    }
-
-    fn get_lu_count(&self) -> u32 {
-        self.lu_count as u32
-    }
-
-    fn get_com_tar2(&self) -> String {
-        self.com_tar2.clone()
-    }
-
-    fn get_cpu_bl_id(&self) -> String {
-        self.cpu_bl_id.clone()
-    }
-
-    fn get_entry(&self, index: u32) -> *const PitEntry {
-        &self.entries[index as usize] as *const _
     }
 
     fn find_entry_by_name(&self, name: &str) -> *const PitEntry {
@@ -392,68 +304,20 @@ pub mod ffi {
     extern "Rust" {
         type PitEntry;
 
-        #[cxx_name = "IsFlashable"]
-        fn is_flashable(self: &PitEntry) -> bool;
-
         #[cxx_name = "GetBinaryType"]
         fn get_binary_type(self: &PitEntry) -> u32;
-        #[cxx_name = "SetBinaryType"]
-        fn set_binary_type(self: &mut PitEntry, binary_type: u32);
 
         #[cxx_name = "GetDeviceType"]
         fn get_device_type(self: &PitEntry) -> u32;
-        #[cxx_name = "SetDeviceType"]
-        fn set_device_type(self: &mut PitEntry, device_type: u32);
 
         #[cxx_name = "GetIdentifier"]
         fn get_identifier(self: &PitEntry) -> u32;
-        #[cxx_name = "SetIdentifier"]
-        fn set_identifier(self: &mut PitEntry, identifier: u32);
-
-        #[cxx_name = "GetAttributes"]
-        fn get_attributes(self: &PitEntry) -> u32;
-        #[cxx_name = "SetAttributes"]
-        fn set_attributes(self: &mut PitEntry, attributes: u32);
-
-        #[cxx_name = "GetUpdateAttributes"]
-        fn get_update_attributes(self: &PitEntry) -> u32;
-        #[cxx_name = "SetUpdateAttributes"]
-        fn set_update_attributes(self: &mut PitEntry, update_attributes: u32);
-
-        #[cxx_name = "GetBlockSizeOrOffset"]
-        fn get_block_size_or_offset(self: &PitEntry) -> u32;
-        #[cxx_name = "SetBlockSizeOrOffset"]
-        fn set_block_size_or_offset(self: &mut PitEntry, block_size_or_offset: u32);
 
         #[cxx_name = "GetBlockCount"]
         fn get_block_count(self: &PitEntry) -> u32;
-        #[cxx_name = "SetBlockCount"]
-        fn set_block_count(self: &mut PitEntry, block_count: u32);
-
-        #[cxx_name = "GetFileOffset"]
-        fn get_file_offset(self: &PitEntry) -> u32;
-        #[cxx_name = "SetFileOffset"]
-        fn set_file_offset(self: &mut PitEntry, file_offset: u32);
-
-        #[cxx_name = "GetFileSize"]
-        fn get_file_size(self: &PitEntry) -> u32;
-        #[cxx_name = "SetFileSize"]
-        fn set_file_size(self: &mut PitEntry, file_size: u32);
 
         #[cxx_name = "GetPartitionName"]
         fn get_partition_name(self: &PitEntry) -> String;
-        #[cxx_name = "SetPartitionName"]
-        fn set_partition_name(self: &mut PitEntry, name: &str);
-
-        #[cxx_name = "GetFlashFilename"]
-        fn get_flash_filename(self: &PitEntry) -> String;
-        #[cxx_name = "SetFlashFilename"]
-        fn set_flash_filename(self: &mut PitEntry, name: &str);
-
-        #[cxx_name = "GetFotaFilename"]
-        fn get_fota_filename(self: &PitEntry) -> String;
-        #[cxx_name = "SetFotaFilename"]
-        fn set_fota_filename(self: &mut PitEntry, name: &str);
 
         type PitData;
 
@@ -461,21 +325,9 @@ pub mod ffi {
         #[cxx_name = "make"]
         fn new_box() -> Box<PitData>;
 
-        #[cxx_name = "GetEntryCount"]
-        fn get_entry_count(self: &PitData) -> u32;
-        #[cxx_name = "GetLUCount"]
-        fn get_lu_count(self: &PitData) -> u32;
-        #[cxx_name = "GetDataSize"]
-        fn get_data_size(self: &PitData) -> u32;
         #[cxx_name = "GetPaddedSize"]
         fn get_padded_size(self: &PitData) -> u32;
-        #[cxx_name = "GetComTar2"]
-        fn get_com_tar2(self: &PitData) -> String;
-        #[cxx_name = "GetCpuBlId"]
-        fn get_cpu_bl_id(self: &PitData) -> String;
 
-        #[cxx_name = "GetEntry"]
-        fn get_entry(self: &PitData, index: u32) -> *const PitEntry;
         #[cxx_name = "FindEntry"]
         fn find_entry_by_name(self: &PitData, name: &str) -> *const PitEntry;
         #[cxx_name = "FindEntry"]

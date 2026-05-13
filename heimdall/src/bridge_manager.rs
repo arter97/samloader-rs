@@ -405,7 +405,7 @@ impl BridgeManager {
     pub fn begin_session(&mut self) -> bool {
         println!("Beginning session...");
 
-        let packet = packets::create_begin_session_packet();
+        let packet = packets::BeginSessionPacket::create();
         let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -419,7 +419,7 @@ impl BridgeManager {
             return false;
         }
 
-        let device_default_packet_size = match packets::unpack_response(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
+        let device_default_packet_size = match packets::Response::unpack(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
             Ok(res) => res,
             Err(_) => return false,
         };
@@ -432,7 +432,7 @@ impl BridgeManager {
             self.file_transfer_packet_size = 1048576;
             self.file_transfer_sequence_max_length = 30;
 
-            let packet = packets::create_file_part_size_packet(self.file_transfer_packet_size);
+            let packet = packets::FilePartSizePacket::create(self.file_transfer_packet_size);
             let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
             if !success {
@@ -446,7 +446,7 @@ impl BridgeManager {
                 return false;
             }
 
-            match packets::unpack_response(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
+            match packets::Response::unpack(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
                 Ok(0) => {},
                 Ok(res) => {
                     print_error!("Unexpected file part size response!\nExpected: 0\nReceived: {}", res);
@@ -463,7 +463,7 @@ impl BridgeManager {
     pub fn end_session(&self) -> bool {
         println!("Ending session...");
 
-        let packet = packets::create_end_session_packet(0); // kRequestEndSession
+        let packet = packets::SessionSetupPacket::create_end_session(0); // kRequestEndSession
         let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -483,7 +483,7 @@ impl BridgeManager {
 
         println!("Rebooting device...");
 
-        let packet = packets::create_end_session_packet(1); // kRequestRebootDevice
+        let packet = packets::SessionSetupPacket::create_end_session(1); // kRequestRebootDevice
         let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -653,7 +653,7 @@ impl BridgeManager {
     }
 
     pub fn request_device_type(&self, _request: u32, result: &mut i32) -> bool {
-        let packet = packets::create_device_type_packet();
+        let packet = packets::SessionSetupPacket::create_device_type();
         let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -667,7 +667,7 @@ impl BridgeManager {
             return false;
         }
 
-        match packets::unpack_response(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
+        match packets::Response::unpack(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
             Ok(res) => {
                 *result = res as i32;
                 true
@@ -681,7 +681,7 @@ impl BridgeManager {
         let pit_buffer_size = pit_data.get_padded_size();
 
         // Start file transfer
-        let packet = packets::create_pit_file_packet(packets::REQUEST_PIT_FILE_FLASH);
+        let packet = packets::PitFilePacket::create(packets::REQUEST_PIT_FILE_FLASH);
         let mut success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -692,13 +692,13 @@ impl BridgeManager {
         let mut response = [0u8; 8];
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
-        if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+        if !success || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
             print_error!("Failed to confirm transfer initialisation!");
             return false;
         }
 
         // Transfer file size
-        let packet = packets::create_flash_part_pit_file_packet(pit_buffer_size);
+        let packet = packets::FlashPartPitFilePacket::create(pit_buffer_size);
         success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -708,7 +708,7 @@ impl BridgeManager {
 
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
-        if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+        if !success || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
             print_error!("Failed to confirm sending of PIT file part information!");
             return false;
         }
@@ -728,13 +728,13 @@ impl BridgeManager {
 
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
-        if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+        if !success || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
             print_error!("Failed to receive PIT file part response!");
             return false;
         }
 
         // End pit file transfer
-        let packet = packets::create_end_pit_file_transfer_packet(pit_buffer_size);
+        let packet = packets::EndPitFileTransferPacket::create(pit_buffer_size);
         success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -744,7 +744,7 @@ impl BridgeManager {
 
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
-        if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+        if !success || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
             print_error!("Failed to confirm end of PIT file transfer!");
             return false;
         }
@@ -753,7 +753,7 @@ impl BridgeManager {
     }
 
     pub fn receive_pit_file(&self) -> Vec<u8> {
-        let packet = packets::create_pit_file_packet(packets::REQUEST_PIT_FILE_DUMP);
+        let packet = packets::PitFilePacket::create(packets::REQUEST_PIT_FILE_DUMP);
         let mut success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -768,7 +768,7 @@ impl BridgeManager {
             return Vec::new();
         }
 
-        let file_size = match packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE) {
+        let file_size = match packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE) {
             Ok(size) => size,
             Err(_) => {
                 print_error!("Failed to receive PIT file size!");
@@ -784,7 +784,7 @@ impl BridgeManager {
         let mut buffer = Vec::with_capacity(file_size as usize);
 
         for i in 0..transfer_count {
-            let packet = packets::create_dump_part_pit_file_packet(i);
+            let packet = packets::DumpPartPitFilePacket::create(i);
             let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
             if !success {
@@ -815,7 +815,7 @@ impl BridgeManager {
         }
 
         // End file transfer
-        let packet = packets::create_pit_file_packet(packets::REQUEST_PIT_FILE_END);
+        let packet = packets::PitFilePacket::create(packets::REQUEST_PIT_FILE_END);
         success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -825,7 +825,7 @@ impl BridgeManager {
 
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
-        if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+        if !success || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
             print_error!("Failed to receive end PIT file transfer verification!");
             return Vec::new();
         }
@@ -865,7 +865,7 @@ impl BridgeManager {
         libc::rewind(file);
 
         // Start file transfer
-        let packet = packets::create_file_transfer_packet(packets::REQUEST_FILE_TRANSFER_FLASH);
+        let packet = packets::FileTransferPacket::create(packets::REQUEST_FILE_TRANSFER_FLASH);
         let mut success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
@@ -876,7 +876,7 @@ impl BridgeManager {
         let mut response = [0u8; 8];
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
-        if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
+        if !success || packets::Response::unpack(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
             print_error!("Failed to confirm transfer initialisation!");
             return false;
         }
@@ -907,7 +907,7 @@ impl BridgeManager {
             let sequence_size = if is_last_sequence { last_sequence_size } else { self.file_transfer_sequence_max_length };
             let sequence_total_byte_count = sequence_size * self.file_transfer_packet_size;
 
-            let packet = packets::create_flash_part_file_transfer_packet(sequence_total_byte_count);
+            let packet = packets::FlashPartFileTransferPacket::create(sequence_total_byte_count);
             success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
             if !success {
@@ -918,7 +918,7 @@ impl BridgeManager {
 
             success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
-            if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
+            if !success || packets::Response::unpack(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
                 println!();
                 print_error!("Failed to confirm beginning of file transfer sequence!");
                 return false;
@@ -952,7 +952,7 @@ impl BridgeManager {
                 success = self.receive_packet(&mut response, self.file_transfer_sequence_timeout as i32, EmptyTransferMode::None);
 
                 if success {
-                    let received_part_index = match packets::unpack_response(&response, packets::RESPONSE_TYPE_SEND_FILE_PART) {
+                    let received_part_index = match packets::Response::unpack(&response, packets::RESPONSE_TYPE_SEND_FILE_PART) {
                         Ok(idx) => idx,
                         Err(_) => {
                             success = false;
@@ -986,7 +986,7 @@ impl BridgeManager {
                         success = self.receive_packet(&mut response, self.file_transfer_sequence_timeout as i32, EmptyTransferMode::None);
 
                         if success {
-                            let received_part_index = match packets::unpack_response(&response, packets::RESPONSE_TYPE_SEND_FILE_PART) {
+                            let received_part_index = match packets::Response::unpack(&response, packets::RESPONSE_TYPE_SEND_FILE_PART) {
                                 Ok(idx) => idx,
                                 Err(_) => {
                                     success = false;
@@ -1024,10 +1024,10 @@ impl BridgeManager {
 
             let packet = match destination {
                 FileTransferDestination::Modem => {
-                    packets::create_end_modem_file_transfer_packet(sequence_effective_byte_count, 0, device_type, is_last_sequence)
+                    packets::EndModemFileTransferPacket::create(sequence_effective_byte_count, 0, device_type, is_last_sequence)
                 },
                 FileTransferDestination::Phone => {
-                    packets::create_end_phone_file_transfer_packet(sequence_effective_byte_count, 0, device_type, file_identifier, is_last_sequence)
+                    packets::EndPhoneFileTransferPacket::create(sequence_effective_byte_count, 0, device_type, file_identifier, is_last_sequence)
                 },
                 _ => unreachable!(),
             };
@@ -1042,7 +1042,7 @@ impl BridgeManager {
 
             success = self.receive_packet(&mut response, self.file_transfer_sequence_timeout as i32, EmptyTransferMode::None);
 
-            if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
+            if !success || packets::Response::unpack(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
                 println!();
                 print_error!("Failed to confirm end of file transfer sequence!");
                 return false;
@@ -1053,7 +1053,7 @@ impl BridgeManager {
     }
 
     pub fn send_total_bytes(&self, total_bytes: u64) -> bool {
-        let packet = packets::create_total_bytes_packet(total_bytes);
+        let packet = packets::TotalBytesPacket::create(total_bytes);
         self.send_packet(&packet, 3000, EmptyTransferMode::After)
     }
 
@@ -1062,7 +1062,7 @@ impl BridgeManager {
         if !self.receive_packet(&mut response, 3000, EmptyTransferMode::None) {
             return false;
         }
-        match packets::unpack_response(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
+        match packets::Response::unpack(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
             Ok(res) => {
                 *result = res;
                 true

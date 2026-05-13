@@ -9,6 +9,7 @@ cxx = "1.0"
 rusb = "0.9"
 libc = "0.2"
 clap = { version = "4", features = ["derive"] }
+binrw = "0.14"
 
 [build-dependencies]
 cc = "1.0"

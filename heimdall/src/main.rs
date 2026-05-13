@@ -86,32 +86,38 @@ pub mod ffi {
         include!("heimdall/source/Interface.h");
         include!("heimdall/libpit/src/lib.rs.h");
 
-        #[namespace = "Heimdall::Interface"]
-        fn Print(message: &str);
-        #[namespace = "Heimdall::Interface"]
-        fn PrintWarning(message: &str);
-        #[namespace = "Heimdall::Interface"]
-        fn PrintError(message: &str);
-        #[namespace = "Heimdall::Interface"]
-        fn PrintDeviceDetectionFailed();
-
         #[namespace = "libpit"]
         type PitData;
 
-        fn action_close_pc_screen(verbose: bool, stdout_errors: bool, usb_log_level: &str) -> i32;
-        fn action_detect(verbose: bool, wait: bool, stdout_errors: bool, usb_log_level: &str) -> i32;
-        fn action_download_pit(output: &str, verbose: bool, wait: bool, stdout_errors: bool, usb_log_level: &str) -> i32;
-        fn action_print_pit(file: &str, verbose: bool, wait: bool, stdout_errors: bool, usb_log_level: &str) -> i32;
-        fn action_flash(repartition: bool, verbose: bool, wait: bool, stdout_errors: bool, usb_log_level: &str, skip_size_check: bool, pit: &str, partitions: &Vec<PartitionArg>) -> i32;
-        
+        fn action_close_pc_screen(verbose: bool, usb_log_level: &str) -> i32;
+        fn action_detect(verbose: bool, wait: bool, usb_log_level: &str) -> i32;
+        fn action_download_pit(output: &str, verbose: bool, wait: bool, usb_log_level: &str) -> i32;
+        fn action_print_pit(file: &str, verbose: bool, wait: bool, usb_log_level: &str) -> i32;
+        fn action_flash(repartition: bool, verbose: bool, wait: bool, usb_log_level: &str, skip_size_check: bool, pit: &str, partitions: &Vec<PartitionArg>) -> i32;
+
         fn action_info() -> i32;
         fn action_version() -> i32;
     }
 }
 
+#[macro_export]
+macro_rules! print_warning {
+    ($($arg:tt)*) => {
+        eprint!("WARNING: ");
+        eprintln!($($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! print_error {
+    ($($arg:tt)*) => {
+        eprint!("ERROR: ");
+        eprintln!($($arg)*);
+    };
+}
+
 fn add_common_args(cmd: Command) -> Command {
     cmd.arg(Arg::new("verbose").long("verbose").action(ArgAction::SetTrue).help("Enable verbose output"))
-       .arg(Arg::new("stdout-errors").long("stdout-errors").action(ArgAction::SetTrue).help("Log errors to stdout instead of stderr"))
        .arg(Arg::new("usb-log-level").long("usb-log-level").num_args(1).help("Set libusb log level (none, error, warning, info, debug)"))
 }
 
@@ -143,14 +149,14 @@ const FLASH_AFTER_HELP: &str = r#"Dynamic Options:
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     let mut partitions = Vec::new();
-    
+
     // Filter out partition arguments for the flash command
     if args.len() > 1 && args[1] == "flash" {
         let mut i = 2;
         while i < args.len() {
             if args[i].starts_with("--") {
                 let key = args[i].trim_start_matches('-').to_string();
-                if !["repartition", "wait", "skip-size-check", "pit", "verbose", "stdout-errors", "usb-log-level"].contains(&key.to_lowercase().as_str()) {
+                if !["repartition", "wait", "skip-size-check", "pit", "verbose", "usb-log-level"].contains(&key.to_lowercase().as_str()) {
                     if i + 1 < args.len() && !args[i+1].starts_with("--") {
                         partitions.push(ffi::PartitionArg {
                             name: key.to_uppercase(),
@@ -205,7 +211,6 @@ fn main() {
         Some(("close-pc-screen", sub_matches)) => {
             ffi::action_close_pc_screen(
                 sub_matches.get_flag("verbose"),
-                sub_matches.get_flag("stdout-errors"),
                 sub_matches.get_one::<String>("usb-log-level").map(|s| s.as_str()).unwrap_or(""),
             )
         }
@@ -213,7 +218,6 @@ fn main() {
             ffi::action_detect(
                 sub_matches.get_flag("verbose"),
                 sub_matches.get_flag("wait"),
-                sub_matches.get_flag("stdout-errors"),
                 sub_matches.get_one::<String>("usb-log-level").map(|s| s.as_str()).unwrap_or(""),
             )
         }
@@ -222,7 +226,6 @@ fn main() {
                 sub_matches.get_one::<String>("output").unwrap(),
                 sub_matches.get_flag("verbose"),
                 sub_matches.get_flag("wait"),
-                sub_matches.get_flag("stdout-errors"),
                 sub_matches.get_one::<String>("usb-log-level").map(|s| s.as_str()).unwrap_or(""),
             )
         }
@@ -231,7 +234,6 @@ fn main() {
                 sub_matches.get_one::<String>("file").map(|s| s.as_str()).unwrap_or(""),
                 sub_matches.get_flag("verbose"),
                 sub_matches.get_flag("wait"),
-                sub_matches.get_flag("stdout-errors"),
                 sub_matches.get_one::<String>("usb-log-level").map(|s| s.as_str()).unwrap_or(""),
             )
         }
@@ -240,7 +242,6 @@ fn main() {
                 sub_matches.get_flag("repartition"),
                 sub_matches.get_flag("verbose"),
                 sub_matches.get_flag("wait"),
-                sub_matches.get_flag("stdout-errors"),
                 sub_matches.get_one::<String>("usb-log-level").map(|s| s.as_str()).unwrap_or(""),
                 sub_matches.get_flag("skip-size-check"),
                 sub_matches.get_one::<String>("pit").map(|s| s.as_str()).unwrap_or(""),
@@ -251,6 +252,6 @@ fn main() {
         Some(("version", _)) => ffi::action_version(),
         _ => unreachable!(),
     };
-    
+
     std::process::exit(result);
 }

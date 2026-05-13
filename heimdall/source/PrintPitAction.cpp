@@ -32,14 +32,11 @@ using namespace libpit;
 using namespace Heimdall;
 
 
-int Heimdall::action_print_pit(rust::Str file, bool verbose, bool wait, bool stdout_errors, rust::Str usb_log_level)
+int Heimdall::action_print_pit(rust::Str file, bool verbose, bool wait, rust::Str usb_log_level)
 {
         string filename(file.data(), file.length());
 
         bool waitForDevice = wait;
-
-        if (stdout_errors)
-                Interface::SetStdoutErrors(true);
 
         // Open file (if specified).
 

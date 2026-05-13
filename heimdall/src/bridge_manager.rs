@@ -14,6 +14,7 @@
 // limitations under the License.
 
 use crate::ffi::{InitialiseResult, PitData as FfiPitData, FileTransferDestination};
+use crate::{print_warning, print_error};
 use crate::packets;
 use libpit::PitData;
 use rusb::{Context, DeviceHandle, LogLevel, UsbContext};
@@ -100,7 +101,7 @@ impl BridgeManager {
 
     pub fn detect_device(&mut self) -> bool {
         if self.wait_for_device {
-            crate::ffi::Print("Waiting for device...\n");
+            println!("Waiting for device...");
         }
 
         loop {
@@ -109,7 +110,7 @@ impl BridgeManager {
                     if let Ok(descriptor) = device.device_descriptor() {
                         for &(vid, pid) in SUPPORTED_DEVICES {
                             if descriptor.vendor_id() == vid && descriptor.product_id() == pid {
-                                crate::ffi::Print("Device detected\n");
+                                println!("Device detected");
                                 return true;
                             }
                         }
@@ -124,15 +125,15 @@ impl BridgeManager {
             }
         }
 
-        crate::ffi::PrintDeviceDetectionFailed();
+        print_device_detection_failed();
         false
     }
 
     fn find_device_interface(&mut self) -> InitialiseResult {
         if self.wait_for_device {
-            crate::ffi::Print("Waiting for device...\n");
+            println!("Waiting for device...");
         } else {
-            crate::ffi::Print("Detecting device...\n");
+            println!("Detecting device...");
         }
 
         let mut heimdall_device = None;
@@ -168,7 +169,7 @@ impl BridgeManager {
         let device = match heimdall_device {
             Some(d) => d,
             None => {
-                crate::ffi::PrintDeviceDetectionFailed();
+                print_device_detection_failed();
                 return InitialiseResult::DeviceNotDetected;
             }
         };
@@ -176,7 +177,7 @@ impl BridgeManager {
         let handle = match device.open() {
             Ok(h) => h,
             Err(e) => {
-                crate::ffi::PrintError(&format!("Failed to access device. libusb error: {}\n", e));
+                print_error!("Failed to access device. libusb error: {}", e);
                 return InitialiseResult::Failed;
             }
         };
@@ -194,38 +195,38 @@ impl BridgeManager {
                 if let Ok(languages) = handle.read_languages(Duration::from_secs(1)) {
                     if !languages.is_empty() {
                         if let Ok(manufacturer) = handle.read_manufacturer_string_ascii(&descriptor) {
-                            crate::ffi::Print(&format!("      Manufacturer: \"{}\"\n", manufacturer));
+                            println!("      Manufacturer: \"{}\"", manufacturer);
                         }
                         if let Ok(product) = handle.read_product_string_ascii(&descriptor) {
-                            crate::ffi::Print(&format!("           Product: \"{}\"\n", product));
+                            println!("           Product: \"{}\"", product);
                         }
                         if let Ok(serial) = handle.read_serial_number_string_ascii(&descriptor) {
-                            crate::ffi::Print(&format!("         Serial No: \"{}\"\n", serial));
+                            println!("         Serial No: \"{}\"", serial);
                         }
                     }
                 }
 
-                crate::ffi::Print(&format!("\n            length: {}\n", descriptor.length()));
-                crate::ffi::Print(&format!("      device class: {}\n", descriptor.class_code()));
-                crate::ffi::Print(&format!("               S/N: {}\n", descriptor.serial_number_string_index().unwrap_or(0)));
-                crate::ffi::Print(&format!("           VID:PID: {:04X}:{:04X}\n", descriptor.vendor_id(), descriptor.product_id()));
-                
+                println!("\n            length: {}", descriptor.length());
+                println!("      device class: {}", descriptor.class_code());
+                println!("               S/N: {}", descriptor.serial_number_string_index().unwrap_or(0));
+                println!("           VID:PID: {:04X}:{:04X}", descriptor.vendor_id(), descriptor.product_id());
+
                 let version = descriptor.device_version();
                 let bcd = (version.0 as u16) << 8 | (version.1 as u16) << 4 | (version.2 as u16);
-                crate::ffi::Print(&format!("         bcdDevice: {:04X}\n", bcd));
+                println!("         bcdDevice: {:04X}", bcd);
 
-                crate::ffi::Print(&format!("   iMan:iProd:iSer: {}:{}:{}\n", 
+                println!("   iMan:iProd:iSer: {}:{}:{}",
                     descriptor.manufacturer_string_index().unwrap_or(0),
                     descriptor.product_string_index().unwrap_or(0),
-                    descriptor.serial_number_string_index().unwrap_or(0)));
-                crate::ffi::Print(&format!("          nb confs: {}\n", descriptor.num_configurations()));
+                    descriptor.serial_number_string_index().unwrap_or(0));
+                println!("          nb confs: {}", descriptor.num_configurations());
             }
         }
 
         let config_descriptor = match device.config_descriptor(0) {
             Ok(c) => c,
             Err(_) => {
-                crate::ffi::PrintError("Failed to retrieve config descriptor\n");
+                print_error!("Failed to retrieve config descriptor");
                 return InitialiseResult::Failed;
             }
         };
@@ -236,10 +237,10 @@ impl BridgeManager {
         for interface in config_descriptor.interfaces() {
             for setting in interface.descriptors() {
                 if self.verbose {
-                    crate::ffi::Print(&format!("\ninterface[{}].altsetting[{}]: num endpoints = {}\n",
-                        interface.number(), setting.setting_number(), setting.num_endpoints()));
-                    crate::ffi::Print(&format!("   Class.SubClass.Protocol: {:02X}.{:02X}.{:02X}\n",
-                        setting.class_code(), setting.sub_class_code(), setting.protocol_code()));
+                    println!("\ninterface[{}].altsetting[{}]: num endpoints = {}",
+                        interface.number(), setting.setting_number(), setting.num_endpoints());
+                    println!("   Class.SubClass.Protocol: {:02X}.{:02X}.{:02X}",
+                        setting.class_code(), setting.sub_class_code(), setting.protocol_code());
                 }
 
                 let mut in_endpoint_address = None;
@@ -247,10 +248,10 @@ impl BridgeManager {
 
                 for (i, endpoint) in setting.endpoint_descriptors().enumerate() {
                     if self.verbose {
-                        crate::ffi::Print(&format!("       endpoint[{}].address: {:02X}\n", 
-                            i, endpoint.address()));
-                        crate::ffi::Print(&format!("           max packet size: {:04X}\n", endpoint.max_packet_size()));
-                        crate::ffi::Print(&format!("          polling interval: {:02X}\n", endpoint.interval()));
+                        println!("       endpoint[{}].address: {:02X}",
+                            i, endpoint.address());
+                        println!("           max packet size: {:04X}", endpoint.max_packet_size());
+                        println!("          polling interval: {:02X}", endpoint.interval());
                     }
 
                     if endpoint.direction() == rusb::Direction::In {
@@ -275,7 +276,7 @@ impl BridgeManager {
         }
 
         if self.interface_index < 0 {
-            crate::ffi::PrintError("Failed to find correct interface configuration\n");
+            print_error!("Failed to find correct interface configuration");
             return InitialiseResult::Failed;
         }
 
@@ -284,23 +285,23 @@ impl BridgeManager {
     }
 
     fn claim_device_interface(&mut self) -> bool {
-        crate::ffi::Print("Claiming interface...\n");
+        println!("Claiming interface...");
 
         let handle = self.handle.as_mut().unwrap();
         if handle.claim_interface(self.interface_index as u8).is_err() {
             #[cfg(target_os = "linux")]
             {
-                crate::ffi::Print("Attempt failed. Detaching driver...\n");
+                println!("Attempt failed. Detaching driver...");
                 let _ = handle.detach_kernel_driver(self.interface_index as u8);
-                crate::ffi::Print("Claiming interface again...\n");
+                println!("Claiming interface again...");
                 if handle.claim_interface(self.interface_index as u8).is_err() {
-                    crate::ffi::PrintError("Claiming interface failed!\n");
+                    print_error!("Claiming interface failed!");
                     return false;
                 }
             }
             #[cfg(not(target_os = "linux"))]
             {
-                crate::ffi::PrintError("Claiming interface failed!\n");
+                print_error!("Claiming interface failed!");
                 return false;
             }
         }
@@ -314,20 +315,20 @@ impl BridgeManager {
             return true;
         }
 
-        crate::ffi::Print("Setting up interface...\n");
+        println!("Setting up interface...");
 
         let handle = self.handle.as_mut().unwrap();
         if handle.set_alternate_setting(self.interface_index as u8, self.alt_setting_index as u8).is_err() {
-            crate::ffi::PrintError("Setting up interface failed!\n");
+            print_error!("Setting up interface failed!");
             return false;
         }
 
-        crate::ffi::Print("\n");
+        println!();
         true
     }
 
     fn release_device_interface(&mut self) {
-        crate::ffi::Print("Releasing device interface...\n");
+        println!("Releasing device interface...");
 
         if let Some(handle) = self.handle.as_mut() {
             let _ = handle.release_interface(self.interface_index as u8);
@@ -339,47 +340,47 @@ impl BridgeManager {
         }
 
         self.interface_claimed = false;
-        crate::ffi::Print("\n");
+        println!();
     }
 
     fn initialise_protocol(&mut self) -> bool {
-        crate::ffi::Print("Initialising protocol...\n");
+        println!("Initialising protocol...");
 
         {
             let handle = self.handle.as_mut().unwrap();
-            crate::ffi::Print("Resetting device...\n");
+            println!("Resetting device...");
             if let Err(e) = handle.reset() {
-                crate::ffi::PrintError(&format!("Failed to reset device! Result: {}\n", e));
+                print_error!("Failed to reset device! Result: {}", e);
             }
         }
 
         if !self.send_bulk_transfer(b"ODIN".as_ptr(), 4, 1000, true) {
-            crate::ffi::PrintError("Failed to send handshake!\n");
+            print_error!("Failed to send handshake!");
         }
 
         let mut data_buffer = [0u8; 1024];
         let data_transferred = self.receive_bulk_transfer(data_buffer.as_mut_ptr(), 1024, 1000, true);
 
         if data_transferred == 4 && &data_buffer[0..4] == b"LOKE" {
-            crate::ffi::Print("Protocol initialisation successful.\n\n");
+            println!("Protocol initialisation successful.\n");
             return true;
         } else {
             if self.verbose {
                 if data_transferred >= 0 {
-                    crate::ffi::PrintError(&format!("Expected: \"LOKE\"\nReceived: \"{}\"\n", String::from_utf8_lossy(&data_buffer[0..data_transferred as usize])));
+                    print_error!("Expected: \"LOKE\"\nReceived: \"{}\"", String::from_utf8_lossy(&data_buffer[0..data_transferred as usize]));
                 } else {
-                    crate::ffi::PrintError("Failed to receive handshake response.\n");
+                    print_error!("Failed to receive handshake response.");
                 }
             }
-            crate::ffi::PrintError("Unexpected handshake response!\n");
+            print_error!("Unexpected handshake response!");
         }
 
-        crate::ffi::PrintError("Protocol initialisation failed!\n\n");
+        print_error!("Protocol initialisation failed!\n");
         false
     }
 
     pub fn initialise(&mut self) -> InitialiseResult {
-        crate::ffi::Print("Initialising connection...\n");
+        println!("Initialising connection...");
 
         let res = self.find_device_interface();
         if res != InitialiseResult::Succeeded {
@@ -402,13 +403,13 @@ impl BridgeManager {
     }
 
     pub fn begin_session(&mut self) -> bool {
-        crate::ffi::Print("Beginning session...\n");
+        println!("Beginning session...");
 
         let packet = packets::create_begin_session_packet();
         let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::PrintError("Failed to begin session!\n");
+            print_error!("Failed to begin session!");
             return false;
         }
 
@@ -423,7 +424,7 @@ impl BridgeManager {
             Err(_) => return false,
         };
 
-        crate::ffi::Print("\nSome devices may take up to 2 minutes to respond.\nPlease be patient!\n\n");
+        println!("\nSome devices may take up to 2 minutes to respond.\nPlease be patient!\n");
         std::thread::sleep(Duration::from_millis(3000));
 
         if device_default_packet_size != 0 {
@@ -435,7 +436,7 @@ impl BridgeManager {
             let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
             if !success {
-                crate::ffi::PrintError("Failed to send file part size packet!\n");
+                print_error!("Failed to send file part size packet!");
                 return false;
             }
 
@@ -448,26 +449,26 @@ impl BridgeManager {
             match packets::unpack_response(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
                 Ok(0) => {},
                 Ok(res) => {
-                    crate::ffi::PrintError(&format!("Unexpected file part size response!\nExpected: 0\nReceived: {}\n", res));
+                    print_error!("Unexpected file part size response!\nExpected: 0\nReceived: {}", res);
                     return false;
                 },
                 Err(_) => return false,
             }
         }
 
-        crate::ffi::Print("Session begun.\n\n");
+        println!("Session begun.\n");
         true
     }
 
     pub fn end_session(&self) -> bool {
-        crate::ffi::Print("Ending session...\n");
+        println!("Ending session...");
 
         let packet = packets::create_end_session_packet(0); // kRequestEndSession
         let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::Print("\n");
-            crate::ffi::PrintError("Failed to send end session packet!\n");
+            println!();
+            print_error!("Failed to send end session packet!");
             return false;
         }
 
@@ -475,19 +476,19 @@ impl BridgeManager {
         let success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
         if !success {
-            crate::ffi::Print("\n");
-            crate::ffi::PrintError("Failed to receive session end confirmation!\n");
+            println!();
+            print_error!("Failed to receive session end confirmation!");
             return false;
         }
 
-        crate::ffi::Print("Rebooting device...\n");
+        println!("Rebooting device...");
 
         let packet = packets::create_end_session_packet(1); // kRequestRebootDevice
         let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::Print("\n");
-            crate::ffi::PrintError("Failed to send reboot device packet!\n");
+            println!();
+            print_error!("Failed to send reboot device packet!");
             return false;
         }
 
@@ -495,8 +496,8 @@ impl BridgeManager {
         let success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
         if !success {
-            crate::ffi::Print("\n");
-            crate::ffi::PrintError("Failed to receive reboot confirmation!\n");
+            println!();
+            print_error!("Failed to receive reboot confirmation!");
             return false;
         }
 
@@ -519,12 +520,12 @@ impl BridgeManager {
         if result.is_err() && retry {
             let retry_delay = 250;
             if self.verbose {
-                crate::ffi::PrintWarning(&format!("libusb error {} whilst sending bulk transfer.", result.as_ref().unwrap_err()));
+                print_warning!("libusb error {} whilst sending bulk transfer.", result.as_ref().unwrap_err());
             }
 
             for i in 0..5 {
                 if self.verbose {
-                    crate::ffi::Print(" Retrying...\n");
+                    println!(" Retrying...");
                 }
                 std::thread::sleep(Duration::from_millis(retry_delay * (i + 1)));
                 result = handle.write_bulk(self.out_endpoint, data_slice, Duration::from_millis(timeout as u64));
@@ -532,11 +533,11 @@ impl BridgeManager {
                     break;
                 }
                 if self.verbose {
-                    crate::ffi::PrintWarning(&format!("libusb error {} whilst sending bulk transfer.", result.as_ref().unwrap_err()));
+                    print_warning!("libusb error {} whilst sending bulk transfer.", result.as_ref().unwrap_err());
                 }
             }
             if self.verbose {
-                crate::ffi::Print("\n");
+                println!();
             }
         }
 
@@ -565,12 +566,12 @@ impl BridgeManager {
         if result.is_err() && retry {
             let retry_delay = 250;
             if self.verbose {
-                crate::ffi::PrintWarning(&format!("libusb error {} whilst receiving bulk transfer.", result.as_ref().unwrap_err()));
+                print_warning!("libusb error {} whilst receiving bulk transfer.", result.as_ref().unwrap_err());
             }
 
             for i in 0..5 {
                 if self.verbose {
-                    crate::ffi::Print(" Retrying...\n");
+                    println!(" Retrying...");
                 }
                 std::thread::sleep(Duration::from_millis(retry_delay * (i + 1)));
                 result = handle.read_bulk(self.in_endpoint, data_slice, Duration::from_millis(timeout as u64));
@@ -578,11 +579,11 @@ impl BridgeManager {
                     break;
                 }
                 if self.verbose {
-                    crate::ffi::PrintWarning(&format!("libusb error {} whilst receiving bulk transfer.", result.as_ref().unwrap_err()));
+                    print_warning!("libusb error {} whilst receiving bulk transfer.", result.as_ref().unwrap_err());
                 }
             }
             if self.verbose {
-                crate::ffi::Print("\n");
+                println!();
             }
         }
 
@@ -600,7 +601,7 @@ impl BridgeManager {
     ) -> bool {
         if (empty_transfer_mode as u32) & (EmptyTransferMode::Before as u32) != 0 {
             if !self.send_bulk_transfer(std::ptr::null(), 0, 100, false) && self.verbose {
-                crate::ffi::PrintWarning("Empty bulk transfer before sending packet failed. Continuing anyway...\n");
+                print_warning!("Empty bulk transfer before sending packet failed. Continuing anyway...");
             }
         }
 
@@ -610,7 +611,7 @@ impl BridgeManager {
 
         if (empty_transfer_mode as u32) & (EmptyTransferMode::After as u32) != 0 {
             if !self.send_bulk_transfer(std::ptr::null(), 0, 100, false) && self.verbose {
-                crate::ffi::PrintWarning("Empty bulk transfer after sending packet failed. Continuing anyway...\n");
+                print_warning!("Empty bulk transfer after sending packet failed. Continuing anyway...");
             }
         }
 
@@ -625,7 +626,7 @@ impl BridgeManager {
     ) -> bool {
         if (empty_transfer_mode as u32) & (EmptyTransferMode::Before as u32) != 0 {
             if self.receive_bulk_transfer(std::ptr::null_mut(), 0, 100, false) < 0 && self.verbose {
-                crate::ffi::PrintWarning("Empty bulk transfer before receiving packet failed. Continuing anyway...\n");
+                print_warning!("Empty bulk transfer before receiving packet failed. Continuing anyway...");
             }
         }
 
@@ -637,14 +638,14 @@ impl BridgeManager {
 
         if received_size as usize != packet.len() {
              if self.verbose {
-                crate::ffi::PrintError(&format!("Incorrect packet size received - expected size = {}, received size = {}.\n", packet.len(), received_size));
+                print_error!("Incorrect packet size received - expected size = {}, received size = {}.", packet.len(), received_size);
             }
             return false;
         }
 
         if (empty_transfer_mode as u32) & (EmptyTransferMode::After as u32) != 0 {
             if self.receive_bulk_transfer(std::ptr::null_mut(), 0, 100, false) < 0 && self.verbose {
-                crate::ffi::PrintWarning("Empty bulk transfer after receiving packet failed. Continuing anyway...\n");
+                print_warning!("Empty bulk transfer after receiving packet failed. Continuing anyway...");
             }
         }
 
@@ -656,7 +657,7 @@ impl BridgeManager {
         let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::PrintError("Failed to request device info packet!\n");
+            print_error!("Failed to request device info packet!");
             return false;
         }
 
@@ -684,7 +685,7 @@ impl BridgeManager {
         let mut success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::PrintError("Failed to initialise PIT file transfer!\n");
+            print_error!("Failed to initialise PIT file transfer!");
             return false;
         }
 
@@ -692,7 +693,7 @@ impl BridgeManager {
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
         if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
-            crate::ffi::PrintError("Failed to confirm transfer initialisation!\n");
+            print_error!("Failed to confirm transfer initialisation!");
             return false;
         }
 
@@ -701,14 +702,14 @@ impl BridgeManager {
         success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::PrintError("Failed to send PIT file part information!\n");
+            print_error!("Failed to send PIT file part information!");
             return false;
         }
 
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
         if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
-            crate::ffi::PrintError("Failed to confirm sending of PIT file part information!\n");
+            print_error!("Failed to confirm sending of PIT file part information!");
             return false;
         }
 
@@ -721,14 +722,14 @@ impl BridgeManager {
         success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::PrintError("Failed to send file part packet!\n");
+            print_error!("Failed to send file part packet!");
             return false;
         }
 
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
         if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
-            crate::ffi::PrintError("Failed to receive PIT file part response!\n");
+            print_error!("Failed to receive PIT file part response!");
             return false;
         }
 
@@ -737,14 +738,14 @@ impl BridgeManager {
         success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::PrintError("Failed to send end PIT file transfer packet!\n");
+            print_error!("Failed to send end PIT file transfer packet!");
             return false;
         }
 
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
         if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
-            crate::ffi::PrintError("Failed to confirm end of PIT file transfer!\n");
+            print_error!("Failed to confirm end of PIT file transfer!");
             return false;
         }
 
@@ -756,21 +757,21 @@ impl BridgeManager {
         let mut success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::PrintError("Failed to request receival of PIT file!\n");
+            print_error!("Failed to request receival of PIT file!");
             return Vec::new();
         }
 
         let mut response = [0u8; 8];
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
         if !success {
-            crate::ffi::PrintError("Failed to receive PIT file size!\n");
+            print_error!("Failed to receive PIT file size!");
             return Vec::new();
         }
 
         let file_size = match packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE) {
             Ok(size) => size,
             Err(_) => {
-                crate::ffi::PrintError("Failed to receive PIT file size!\n");
+                print_error!("Failed to receive PIT file size!");
                 return Vec::new();
             }
         };
@@ -787,7 +788,7 @@ impl BridgeManager {
             let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
             if !success {
-                crate::ffi::PrintError(&format!("Failed to request PIT file part #{i}!\n"));
+                print_error!("Failed to request PIT file part #{}!", i);
                 return Vec::new();
             }
 
@@ -801,7 +802,7 @@ impl BridgeManager {
             let received_size = self.receive_bulk_transfer(part_buffer.as_mut_ptr(), 500, 3000, true);
 
             if received_size < 0 {
-                crate::ffi::PrintError(&format!("Failed to receive PIT file part #{i}!\n"));
+                print_error!("Failed to receive PIT file part #{}!", i);
                 return Vec::new();
             }
 
@@ -818,14 +819,14 @@ impl BridgeManager {
         success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::PrintError("Failed to send request to end PIT file transfer!\n");
+            print_error!("Failed to send request to end PIT file transfer!");
             return Vec::new();
         }
 
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
         if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
-            crate::ffi::PrintError("Failed to receive end PIT file transfer verification!\n");
+            print_error!("Failed to receive end PIT file transfer verification!");
             return Vec::new();
         }
 
@@ -833,14 +834,14 @@ impl BridgeManager {
     }
 
     pub fn download_pit_file(&self) -> Vec<u8> {
-        crate::ffi::Print("Downloading device's PIT file...\n");
+        println!("Downloading device's PIT file...");
 
         let pit_file = self.receive_pit_file();
 
         if pit_file.is_empty() {
-            crate::ffi::PrintError("Failed to download PIT file!\n");
+            print_error!("Failed to download PIT file!");
         } else {
-            crate::ffi::Print("PIT file download successful.\n\n");
+            println!("PIT file download successful.\n");
         }
 
         pit_file
@@ -868,7 +869,7 @@ impl BridgeManager {
         let mut success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
         if !success {
-            crate::ffi::PrintError("Failed to initialise file transfer!\n");
+            print_error!("Failed to initialise file transfer!");
             return false;
         }
 
@@ -876,7 +877,7 @@ impl BridgeManager {
         success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
         if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
-            crate::ffi::PrintError("Failed to confirm transfer initialisation!\n");
+            print_error!("Failed to confirm transfer initialisation!");
             return false;
         }
 
@@ -897,7 +898,7 @@ impl BridgeManager {
 
         let mut bytes_transferred = 0u32;
         let mut previous_percent = 0u32;
-        crate::ffi::Print("0%");
+        println!("0%");
 
         let mut file_buffer = vec![0u8; self.file_transfer_packet_size as usize];
 
@@ -910,16 +911,16 @@ impl BridgeManager {
             success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
 
             if !success {
-                crate::ffi::Print("\n");
-                crate::ffi::PrintError("Failed to begin file transfer sequence!\n");
+                println!();
+                print_error!("Failed to begin file transfer sequence!");
                 return false;
             }
 
             success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
 
             if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
-                crate::ffi::Print("\n");
-                crate::ffi::PrintError("Failed to confirm beginning of file transfer sequence!\n");
+                println!();
+                print_error!("Failed to confirm beginning of file transfer sequence!");
                 return false;
             }
 
@@ -942,14 +943,14 @@ impl BridgeManager {
                 success = self.send_packet(&packet, 3000, send_empty_transfer_mode);
 
                 if !success {
-                    crate::ffi::Print("\n");
-                    crate::ffi::PrintError("Failed to send file part packet!\n");
+                    println!();
+                    print_error!("Failed to send file part packet!");
                     return false;
                 }
 
                 // Response
                 success = self.receive_packet(&mut response, self.file_transfer_sequence_timeout as i32, EmptyTransferMode::None);
-                
+
                 if success {
                     let received_part_index = match packets::unpack_response(&response, packets::RESPONSE_TYPE_SEND_FILE_PART) {
                         Ok(idx) => idx,
@@ -959,8 +960,8 @@ impl BridgeManager {
                         }
                     };
                     if success && received_part_index != file_part_index {
-                        crate::ffi::Print("\n");
-                        crate::ffi::PrintError(&format!("Expected file part index: {} Received: {}\n", file_part_index, received_part_index));
+                        println!();
+                        print_error!("Expected file part index: {} Received: {}", file_part_index, received_part_index);
                         return false;
                     }
                 }
@@ -968,8 +969,8 @@ impl BridgeManager {
                 if !success {
                     let mut retry_success = false;
                     for _ in 0..4 {
-                        crate::ffi::Print("\n");
-                        crate::ffi::PrintError("Retrying...");
+                        println!();
+                        println!("Retrying...");
 
                         // Rewind file pointer
                         libc::fseek(file, (bytes_transferred) as i64, libc::SEEK_SET);
@@ -983,7 +984,7 @@ impl BridgeManager {
                         }
 
                         success = self.receive_packet(&mut response, self.file_transfer_sequence_timeout as i32, EmptyTransferMode::None);
-                        
+
                         if success {
                             let received_part_index = match packets::unpack_response(&response, packets::RESPONSE_TYPE_SEND_FILE_PART) {
                                 Ok(idx) => idx,
@@ -1000,8 +1001,8 @@ impl BridgeManager {
                     }
 
                     if !retry_success {
-                        crate::ffi::Print("\n");
-                        crate::ffi::PrintError("Failed to receive file part response!\n");
+                        println!();
+                        print_error!("Failed to receive file part response!");
                         return false;
                     }
                 }
@@ -1010,7 +1011,7 @@ impl BridgeManager {
                 let current_percent = (100.0f32 * (bytes_transferred as f32 / file_size as f32)) as u32;
 
                 if current_percent != previous_percent {
-                    crate::ffi::Print(&format!("\n{}%\n", current_percent));
+                    println!("\n{}%", current_percent);
                     previous_percent = current_percent;
                 }
             }
@@ -1034,16 +1035,16 @@ impl BridgeManager {
             success = self.send_packet(&packet, 3000, EmptyTransferMode::BeforeAndAfter);
 
             if !success {
-                crate::ffi::Print("\n");
-                crate::ffi::PrintError("Failed to end file transfer sequence!\n");
+                println!();
+                print_error!("Failed to end file transfer sequence!");
                 return false;
             }
 
             success = self.receive_packet(&mut response, self.file_transfer_sequence_timeout as i32, EmptyTransferMode::None);
 
             if !success || packets::unpack_response(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
-                crate::ffi::Print("\n");
-                crate::ffi::PrintError("Failed to confirm end of file transfer sequence!\n");
+                println!();
+                print_error!("Failed to confirm end of file transfer sequence!");
                 return false;
             }
         }
@@ -1077,4 +1078,8 @@ impl Drop for BridgeManager {
             self.release_device_interface();
         }
     }
+}
+
+fn print_device_detection_failed() {
+    eprintln!("ERROR: Failed to detect compatible download-mode device.");
 }

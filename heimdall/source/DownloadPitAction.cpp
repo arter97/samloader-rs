@@ -31,20 +31,17 @@ using namespace std;
 using namespace Heimdall;
 
 
-int Heimdall::action_download_pit(rust::Str output, bool verbose, bool wait, bool stdout_errors, rust::Str usb_log_level)
+int Heimdall::action_download_pit(rust::Str output, bool verbose, bool wait, rust::Str usb_log_level)
 {
         string outputFilename(output.data(), output.length());
 
         if (outputFilename.empty())
         {
-                Interface::Print("Output file was not specified.\n\n");
+                printf("Output file was not specified.\n\n");
                 return (0);
         }
 
         bool waitForDevice = wait;
-
-        if (stdout_errors)
-                Interface::SetStdoutErrors(true);
 
         // Info
         Interface::PrintReleaseInfo();

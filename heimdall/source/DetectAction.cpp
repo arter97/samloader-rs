@@ -27,12 +27,9 @@
 using namespace std;
 using namespace Heimdall;
 
-
-int Heimdall::action_detect(bool verbose, bool wait, bool stdout_errors, rust::Str usb_log_level)
+int Heimdall::action_detect(bool verbose, bool wait, rust::Str usb_log_level)
 {
-        if (stdout_errors)
-                Interface::SetStdoutErrors(true);
-
+        // Info
         rust::Box<BridgeManager> bridgeManager = BridgeManager::create(verbose, wait);
         bridgeManager->SetUsbLogLevel(usb_log_level);
 

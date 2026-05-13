@@ -201,11 +201,11 @@ static bool setupPartitionFlashInfo(const vector<PartitionFile>& partitionFiles,
 
 static bool flashPitData(BridgeManager *bridgeManager, const PitData& pitData)
 {
-        Interface::Print("Uploading PIT\n");
+        printf("Uploading PIT\n");
 
         if (bridgeManager->SendPitData(pitData))
         {
-                Interface::Print("PIT upload successful\n\n");
+                printf("PIT upload successful\n\n");
                 return (true);
         }
         else
@@ -219,12 +219,12 @@ static bool flashFile(BridgeManager *bridgeManager, const PartitionFlashInfo& pa
 {
         if (static_cast<BinaryType>(partitionFlashInfo.pitEntry->GetBinaryType()) == BinaryType::CommunicationProcessor) // Modem
         {
-                Interface::Print("Uploading %s\n", partitionFlashInfo.pitEntry->GetPartitionName().c_str());
+                printf("Uploading %s\n", partitionFlashInfo.pitEntry->GetPartitionName().c_str());
 
                 if (bridgeManager->SendFile(partitionFlashInfo.file, FileTransferDestination::Modem,
                         partitionFlashInfo.pitEntry->GetDeviceType(), 0xFFFFFFFF))
                 {
-                        Interface::Print("%s upload successful\n\n", partitionFlashInfo.pitEntry->GetPartitionName().c_str());
+                        printf("%s upload successful\n\n", partitionFlashInfo.pitEntry->GetPartitionName().c_str());
                         return (true);
                 }
                 else
@@ -235,12 +235,12 @@ static bool flashFile(BridgeManager *bridgeManager, const PartitionFlashInfo& pa
         }
         else // static_cast<BinaryType>(partitionFlashInfo.pitEntry->GetBinaryType()) == BinaryType::ApplicationProcessor
         {
-                Interface::Print("Uploading %s\n", partitionFlashInfo.pitEntry->GetPartitionName().c_str());
+                printf("Uploading %s\n", partitionFlashInfo.pitEntry->GetPartitionName().c_str());
 
                 if (bridgeManager->SendFile(partitionFlashInfo.file, FileTransferDestination::Phone,
                         partitionFlashInfo.pitEntry->GetDeviceType(), partitionFlashInfo.pitEntry->GetIdentifier()))
                 {
-                        Interface::Print("%s upload successful\n\n", partitionFlashInfo.pitEntry->GetPartitionName().c_str());
+                        printf("%s upload successful\n\n", partitionFlashInfo.pitEntry->GetPartitionName().c_str());
                         return (true);
                 }
                 else
@@ -386,7 +386,7 @@ static PitData *getPitData(BridgeManager *bridgeManager, FILE *pitFile, bool rep
 
                         if (!pitsMatch)
                         {
-                                Interface::Print("Local and device PIT files don't match and repartition wasn't specified!\n");
+                                printf("Local and device PIT files don't match and repartition wasn't specified!\n");
                                 Interface::PrintError("Flash aborted!\n");
                                 return (nullptr);
                         }
@@ -396,19 +396,16 @@ static PitData *getPitData(BridgeManager *bridgeManager, FILE *pitFile, bool rep
         return (pitData);
 }
 
-int Heimdall::action_flash(bool repartition, bool verbose, bool wait, bool stdout_errors, rust::Str usb_log_level, bool skip_size_check, rust::Str pit, const rust::Vec<PartitionArg>& partitions)
+int Heimdall::action_flash(bool repartition, bool verbose, bool wait, rust::Str usb_log_level, bool skip_size_check, rust::Str pit, const rust::Vec<PartitionArg>& partitions)
 {
         bool waitForDevice = wait;
         bool skipSizeCheck = skip_size_check;
-
-        if (stdout_errors)
-                Interface::SetStdoutErrors(true);
 
         string pitStr(pit.data(), pit.length());
 
         if (repartition && pitStr.empty())
         {
-                Interface::Print("If you wish to repartition then a PIT file must be specified.\n\n");
+                printf("If you wish to repartition then a PIT file must be specified.\n\n");
                 return (0);
         }
 
@@ -425,7 +422,7 @@ int Heimdall::action_flash(bool repartition, bool verbose, bool wait, bool stdou
 
         if (partitionFiles.size() == 0)
         {
-                Interface::Print("No partitions to flash.\n");
+                printf("No partitions to flash.\n");
                 return (0);
         }
 

@@ -18,6 +18,9 @@
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  THE SOFTWARE.*/
 
+// C/C++ Standard Library
+#include <stdio.h>
+
 // Heimdall
 #include "ActionInterfaces.h"
 #include "Heimdall.h"
@@ -28,11 +31,8 @@ using namespace std;
 using namespace Heimdall;
 
 
-int Heimdall::action_close_pc_screen(bool verbose, bool stdout_errors, rust::Str usb_log_level)
+int Heimdall::action_close_pc_screen(bool verbose, rust::Str usb_log_level)
 {
-        if (stdout_errors)
-                Interface::SetStdoutErrors(true);
-
         // Info
         Interface::PrintReleaseInfo();
         Sleep(1000);
@@ -46,13 +46,13 @@ int Heimdall::action_close_pc_screen(bool verbose, bool stdout_errors, rust::Str
                 return (1);
         }
 
-        Interface::Print("Attempting to close connect to pc screen...\n");
+        printf("Attempting to close connect to pc screen...\n");
 
         bool success = bridgeManager->EndSession();
 
         if (success)
         {
-                Interface::Print("Attempt complete\n");
+                printf("Attempt complete\n");
                 return (0);
         }
         else

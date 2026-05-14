@@ -27,6 +27,7 @@
 
 // libpit
 #include "heimdall/libpit/src/lib.rs.h"
+#include "heimdall/src/main.rs.h"
 
 // Heimdall
 #include "Heimdall.h"
@@ -36,10 +37,6 @@ namespace Heimdall
         namespace Interface
         {
                 void PrintError(const char *format, ...);
-
-                void PrintVersion(void);
-                void PrintReleaseInfo(void);
-                void PrintFullInfo(void);
         }
 }
 

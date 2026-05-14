@@ -18,9 +18,11 @@ extern crate libpit;
 
 mod bridge_manager;
 mod packets;
-pub use crate::bridge_manager::BridgeManager;
+mod version;
 
+use bridge_manager::BridgeManager;
 use clap::{Arg, Command, ArgAction};
+use version::print_release_info;
 
 #[cxx::bridge(namespace = "Heimdall")]
 pub mod ffi {
@@ -76,6 +78,10 @@ pub mod ffi {
             device_type: u32,
             file_identifier: u32,
         ) -> bool;
+
+        #[namespace = "Heimdall::Interface"]
+        #[cxx_name = "PrintReleaseInfo"]
+        fn print_release_info();
     }
 
     unsafe extern "C++" {
@@ -93,9 +99,6 @@ pub mod ffi {
         fn action_download_pit(output: &str, verbose: bool, wait: bool, usb_log_level: &str) -> i32;
         fn action_print_pit(file: &str, verbose: bool, wait: bool, usb_log_level: &str) -> i32;
         fn action_flash(repartition: bool, verbose: bool, wait: bool, usb_log_level: &str, skip_size_check: bool, pit: &str, partitions: &Vec<PartitionArg>) -> i32;
-
-        fn action_info() -> i32;
-        fn action_version() -> i32;
     }
 }
 
@@ -236,8 +239,14 @@ fn main() {
                 &partitions,
             )
         }
-        Some(("info", _)) => ffi::action_info(),
-        Some(("version", _)) => ffi::action_version(),
+        Some(("info", _)) => {
+            version::print_full_info();
+            0
+        }
+        Some(("version", _)) => {
+            version::print_version();
+            0
+        }
         _ => unreachable!(),
     };
 

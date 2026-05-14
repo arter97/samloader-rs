@@ -31,19 +31,6 @@ using namespace std;
 using namespace libpit;
 using namespace Heimdall;
 
-const char *version = "v2.2.2";
-
-const char *releaseInfo = "Heimdall %s\n\n\
-Copyright (c) 2010-2017 Benjamin Dobell, Glass Echidna https://glassechidna.com.au\n\
-Copyright (c) 2021-2024 Henrik Grimler\n\
-This software is provided free of charge. Copying and redistribution is encouraged.\n\n";
-
-static const char *extraInfo = "Heimdall utilises libusb for all USB communication:\n\
-    https://www.libusb.info/\n\
-\n\
-libusb is licensed under the LGPL-2.1:\n\
-    https://www.gnu.org/licenses/licenses.html#LGPL\n\n";
-
 void Interface::PrintError(const char *format, ...)
 {
         va_list stderrArgs;
@@ -54,20 +41,4 @@ void Interface::PrintError(const char *format, ...)
         fflush(stderr);
 
         va_end(stderrArgs);
-}
-
-void Interface::PrintVersion(void)
-{
-        printf("%s\n", version);
-}
-
-void Interface::PrintReleaseInfo(void)
-{
-        printf(releaseInfo, version);
-}
-
-void Interface::PrintFullInfo(void)
-{
-        printf(releaseInfo, version);
-        printf("%s", extraInfo);
 }

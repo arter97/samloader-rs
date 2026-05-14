@@ -138,11 +138,9 @@ fn main() {
         "source/DetectAction.cpp",
         "source/DownloadPitAction.cpp",
         "source/FlashAction.cpp",
-        "source/InfoAction.cpp",
         "source/Interface.cpp",
         "source/PrintPitAction.cpp",
         "source/Utility.cpp",
-        "source/VersionAction.cpp",
     ];
 
     for source in &sources {

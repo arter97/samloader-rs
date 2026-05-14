@@ -35,8 +35,6 @@ namespace Heimdall
 	int action_download_pit(rust::Str output, bool verbose, bool wait, rust::Str usb_log_level);
 	int action_print_pit(rust::Str file, bool verbose, bool wait, rust::Str usb_log_level);
 	int action_flash(bool repartition, bool verbose, bool wait, rust::Str usb_log_level, bool skip_size_check, rust::Str pit, const rust::Vec<PartitionArg>& partitions);
-	int action_info();
-	int action_version();
 }
 
 #endif

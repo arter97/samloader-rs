@@ -189,25 +189,28 @@ impl PitData {
             eprintln!("Failed to pack PIT: {}", e);
         }
     }
+}
 
-    pub fn print(&self) {
-        println!("--- PIT Header ---");
-        println!("Entry Count: {}", self.entries.len());
-        println!("Unknown string: {}", self.com_tar2);
-        println!("CPU/bootloader tag: {}", self.cpu_bl_id);
-        println!("Logic unit count: {}", self.lu_count);
+impl std::fmt::Display for PitData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "--- PIT Header ---")?;
+        writeln!(f, "Entry Count: {}", self.entries.len())?;
+        writeln!(f, "Unknown string: {}", self.com_tar2)?;
+        writeln!(f, "CPU/bootloader tag: {}", self.cpu_bl_id)?;
+        writeln!(f, "Logic unit count: {}", self.lu_count)?;
 
         for (i, entry) in self.entries.iter().enumerate() {
-            println!("\n\n--- Entry #{} ---", i);
+            writeln!(f, "\n\n--- Entry #{} ---", i)?;
 
             let binary_type_str = match entry.binary_type {
                 BinaryType::ApplicationProcessor => "AP",
                 BinaryType::CommunicationProcessor => "CP",
             };
-            println!(
+            writeln!(
+                f,
                 "Binary Type: {} ({})",
                 entry.binary_type as u32, binary_type_str
-            );
+            )?;
 
             let device_type_str = match entry.device_type {
                 DeviceType::OneNand => "OneNAND",
@@ -216,12 +219,13 @@ impl PitData {
                 DeviceType::All => "All (?)",
                 DeviceType::UFS => "UFS",
             };
-            println!(
+            writeln!(
+                f,
                 "Device Type: {} ({})",
                 entry.device_type as u32, device_type_str
-            );
+            )?;
 
-            println!("Identifier: {}", entry.identifier);
+            writeln!(f, "Identifier: {}", entry.identifier)?;
 
             let mut attr_str = String::new();
             if entry.attributes.stl() {
@@ -232,11 +236,12 @@ impl PitData {
             } else {
                 attr_str.push_str("Read-Only");
             }
-            println!(
+            writeln!(
+                f,
                 "Attributes: {} ({})",
                 u32::from_le_bytes(entry.attributes.into_bytes()),
                 attr_str
-            );
+            )?;
 
             let mut update_attr_str = String::new();
             let update_attributes_u32 = u32::from_le_bytes(entry.update_attributes.into_bytes());
@@ -251,22 +256,24 @@ impl PitData {
                     update_attr_str.push_str(" (Secure)");
                 }
             }
-            println!(
+            writeln!(
+                f,
                 "Update Attributes: {}{}",
                 update_attributes_u32, update_attr_str
-            );
+            )?;
 
-            println!(
+            writeln!(
+                f,
                 "Partition Block Size/Offset: {}",
                 entry.block_size_or_offset
-            );
-            println!("Partition Block Count: {}", entry.block_count);
-            println!("File Offset (Obsolete): {}", entry.file_offset);
-            println!("File Size (Obsolete): {}", entry.file_size);
-            println!("Partition Name: {}", entry.partition_name);
-            println!("Flash Filename: {}", entry.flash_filename);
-            println!("FOTA Filename: {}", entry.fota_filename);
+            )?;
+            writeln!(f, "Partition Block Count: {}", entry.block_count)?;
+            writeln!(f, "File Offset (Obsolete): {}", entry.file_offset)?;
+            writeln!(f, "File Size (Obsolete): {}", entry.file_size)?;
+            writeln!(f, "Partition Name: {}", entry.partition_name)?;
+            writeln!(f, "Flash Filename: {}", entry.flash_filename)?;
+            writeln!(f, "FOTA Filename: {}", entry.fota_filename)?;
         }
-        println!();
+        writeln!(f)
     }
 }

@@ -16,7 +16,6 @@
 use crate::print_error;
 use crate::version;
 use crate::BridgeManager;
-use crate::InitialiseResult;
 use libpit::PitData;
 use std::fs::File;
 use std::io::Read;
@@ -44,7 +43,7 @@ pub(crate) fn action_print_pit(file: &str, verbose: bool, wait: bool, usb_log_le
 
         match PitData::new(&buffer) {
             Ok(pit_data) => {
-                pit_data.print();
+                println!("{}", pit_data);
                 0
             }
             Err(_) => {
@@ -56,28 +55,43 @@ pub(crate) fn action_print_pit(file: &str, verbose: bool, wait: bool, usb_log_le
         let mut bridge_manager = BridgeManager::new(verbose, wait);
         bridge_manager.set_usb_log_level(usb_log_level);
 
-        if bridge_manager.initialise() != InitialiseResult::Succeeded
-            || !bridge_manager.begin_session()
-        {
+        if let Err(e) = bridge_manager.initialise() {
+            print_error!("{}", e);
             return 1;
         }
 
-        let device_pit = bridge_manager.download_pit_file();
-        let mut success = !device_pit.is_empty();
+        if let Err(e) = bridge_manager.begin_session() {
+            print_error!("{}", e);
+            return 1;
+        }
 
-        if success {
-            match PitData::new(&device_pit) {
-                Ok(pit_data) => {
-                    pit_data.print();
+        let mut success = true;
+        let mut device_pit_data = None;
+
+        match bridge_manager.download_pit_file() {
+            Ok(device_pit) => {
+                match PitData::new(&device_pit) {
+                    Ok(pit_data) => {
+                        device_pit_data = Some(pit_data);
+                    }
+                    Err(_) => {
+                        print_error!("Failed to unpack device's PIT file!");
+                        success = false;
+                    }
                 }
-                Err(_) => {
-                    print_error!("Failed to unpack device's PIT file!");
-                    success = false;
-                }
+            }
+            Err(e) => {
+                print_error!("{}", e);
+                success = false;
             }
         }
 
-        if !bridge_manager.end_session() {
+        if let Some(pit_data) = device_pit_data {
+            println!("{}", pit_data);
+        }
+
+        if let Err(e) = bridge_manager.end_session() {
+            print_error!("{}", e);
             success = false;
         }
 

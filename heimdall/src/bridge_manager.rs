@@ -15,7 +15,7 @@
 
 use crate::packets;
 use crate::{print_error, print_warning};
-use crate::{FileTransferDestination, InitialiseResult};
+use crate::FileTransferDestination;
 use libpit::{DeviceType, PitData};
 use rusb::{Context, DeviceHandle, LogLevel, UsbContext};
 use std::time::Duration;
@@ -99,7 +99,7 @@ impl BridgeManager {
         self.context.set_log_level(self.usb_log_level);
     }
 
-    pub(crate) fn detect_device(&mut self) -> bool {
+    pub(crate) fn detect_device(&mut self) -> Result<(), String> {
         if self.wait_for_device {
             println!("Waiting for device...");
         }
@@ -111,7 +111,7 @@ impl BridgeManager {
                         for &(vid, pid) in SUPPORTED_DEVICES {
                             if descriptor.vendor_id() == vid && descriptor.product_id() == pid {
                                 println!("Device detected");
-                                return true;
+                                return Ok(());
                             }
                         }
                     }
@@ -125,11 +125,10 @@ impl BridgeManager {
             }
         }
 
-        print_device_detection_failed();
-        false
+        Err("Failed to detect compatible download-mode device.".to_string())
     }
 
-    fn find_device_interface(&mut self) -> InitialiseResult {
+    fn find_device_interface(&mut self) -> Result<(), String> {
         if self.wait_for_device {
             println!("Waiting for device...");
         } else {
@@ -168,18 +167,12 @@ impl BridgeManager {
 
         let device = match heimdall_device {
             Some(d) => d,
-            None => {
-                print_device_detection_failed();
-                return InitialiseResult::DeviceNotDetected;
-            }
+            None => return Err("Failed to detect compatible download-mode device.".to_string()),
         };
 
         let handle = match device.open() {
             Ok(h) => h,
-            Err(e) => {
-                print_error!("Failed to access device. libusb error: {}", e);
-                return InitialiseResult::Failed;
-            }
+            Err(e) => return Err(format!("Failed to access device. libusb error: {}", e)),
         };
 
         if let Ok(config) = handle.active_configuration() {
@@ -233,13 +226,9 @@ impl BridgeManager {
             }
         }
 
-        let config_descriptor = match device.config_descriptor(0) {
-            Ok(c) => c,
-            Err(_) => {
-                print_error!("Failed to retrieve config descriptor");
-                return InitialiseResult::Failed;
-            }
-        };
+        let config_descriptor = device
+            .config_descriptor(0)
+            .map_err(|_| "Failed to retrieve config descriptor".to_string())?;
 
         self.interface_index = -1;
         self.alt_setting_index = -1;
@@ -298,15 +287,14 @@ impl BridgeManager {
         }
 
         if self.interface_index < 0 {
-            print_error!("Failed to find correct interface configuration");
-            return InitialiseResult::Failed;
+            return Err("Failed to find correct interface configuration".to_string());
         }
 
         self.handle = Some(handle);
-        InitialiseResult::Succeeded
+        Ok(())
     }
 
-    fn claim_device_interface(&mut self) -> bool {
+    fn claim_device_interface(&mut self) -> Result<(), String> {
         println!("Claiming interface...");
 
         let handle = self.handle.as_mut().unwrap();
@@ -317,39 +305,33 @@ impl BridgeManager {
                 let _ = handle.detach_kernel_driver(self.interface_index as u8);
                 println!("Claiming interface again...");
                 if handle.claim_interface(self.interface_index as u8).is_err() {
-                    print_error!("Claiming interface failed!");
-                    return false;
+                    return Err("Claiming interface failed!".to_string());
                 }
             }
             #[cfg(not(target_os = "linux"))]
             {
-                print_error!("Claiming interface failed!");
-                return false;
+                return Err("Claiming interface failed!".to_string());
             }
         }
 
         self.interface_claimed = true;
-        true
+        Ok(())
     }
 
-    fn setup_device_interface(&mut self) -> bool {
+    fn setup_device_interface(&mut self) -> Result<(), String> {
         if self.alt_setting_index == 0 {
-            return true;
+            return Ok(());
         }
 
         println!("Setting up interface...");
 
         let handle = self.handle.as_mut().unwrap();
-        if handle
+        handle
             .set_alternate_setting(self.interface_index as u8, self.alt_setting_index as u8)
-            .is_err()
-        {
-            print_error!("Setting up interface failed!");
-            return false;
-        }
+            .map_err(|_| "Setting up interface failed!".to_string())?;
 
         println!();
-        true
+        Ok(())
     }
 
     fn release_device_interface(&mut self) {
@@ -368,91 +350,69 @@ impl BridgeManager {
         println!();
     }
 
-    fn initialise_protocol(&mut self) -> bool {
+    fn initialise_protocol(&mut self) -> Result<(), String> {
         println!("Initialising protocol...");
 
         {
             let handle = self.handle.as_mut().unwrap();
             println!("Resetting device...");
             if let Err(e) = handle.reset() {
-                print_error!("Failed to reset device! Result: {}", e);
+                print_warning!("Failed to reset device! Result: {}", e);
             }
         }
 
-        if !self.send_bulk_transfer(b"ODIN".as_ptr(), 4, 1000, true) {
-            print_error!("Failed to send handshake!");
-        }
+        self.send_bulk_transfer(b"ODIN", 1000, true)
+            .then_some(())
+            .ok_or_else(|| "Failed to send handshake!".to_string())?;
 
         let mut data_buffer = [0u8; 1024];
-        let data_transferred =
-            self.receive_bulk_transfer(data_buffer.as_mut_ptr(), 1024, 1000, true);
+        let data_transferred = self.receive_bulk_transfer(&mut data_buffer, 1000, true);
 
         if data_transferred == 4 && &data_buffer[0..4] == b"LOKE" {
             println!("Protocol initialisation successful.\n");
-            return true;
+            Ok(())
         } else {
             if self.verbose {
                 if data_transferred >= 0 {
-                    print_error!(
-                        "Expected: \"LOKE\"\nReceived: \"{}\"",
+                    return Err(format!(
+                        "Unexpected handshake response!\nExpected: \"LOKE\"\nReceived: \"{}\"",
                         String::from_utf8_lossy(&data_buffer[0..data_transferred as usize])
-                    );
+                    ));
                 } else {
-                    print_error!("Failed to receive handshake response.");
+                    return Err(
+                        "Unexpected handshake response!\nFailed to receive handshake response."
+                            .to_string(),
+                    );
                 }
             }
-            print_error!("Unexpected handshake response!");
+            Err("Unexpected handshake response!".to_string())
         }
-
-        print_error!("Protocol initialisation failed!\n");
-        false
     }
 
-    pub(crate) fn initialise(&mut self) -> InitialiseResult {
+    pub(crate) fn initialise(&mut self) -> Result<(), String> {
         println!("Initialising connection...");
 
-        let res = self.find_device_interface();
-        if res != InitialiseResult::Succeeded {
-            return res;
-        }
+        self.find_device_interface()?;
+        self.claim_device_interface()?;
+        self.setup_device_interface()?;
+        self.initialise_protocol()?;
 
-        if !self.claim_device_interface() {
-            return InitialiseResult::Failed;
-        }
-
-        if !self.setup_device_interface() {
-            return InitialiseResult::Failed;
-        }
-
-        if !self.initialise_protocol() {
-            return InitialiseResult::Failed;
-        }
-
-        InitialiseResult::Succeeded
+        Ok(())
     }
 
-    pub(crate) fn begin_session(&mut self) -> bool {
+    pub(crate) fn begin_session(&mut self) -> Result<(), String> {
         println!("Beginning session...");
 
         let packet = packets::BeginSessionPacket::create();
-        let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
-
-        if !success {
-            print_error!("Failed to begin session!");
-            return false;
-        }
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to begin session!".to_string())?;
 
         let mut response = [0u8; 8];
-        let success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
-        if !success {
-            return false;
-        }
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)?;
 
         let device_default_packet_size =
-            match packets::Response::unpack(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
-                Ok(res) => res,
-                Err(_) => return false,
-            };
+            packets::Response::unpack(&response, packets::RESPONSE_TYPE_SESSION_SETUP)
+                .map_err(|_| "Failed to unpack session setup response!".to_string())?;
 
         println!("\nSome devices may take up to 2 minutes to respond.\nPlease be patient!\n");
         std::thread::sleep(Duration::from_millis(3000));
@@ -463,102 +423,60 @@ impl BridgeManager {
             self.file_transfer_sequence_max_length = 30;
 
             let packet = packets::FilePartSizePacket::create(self.file_transfer_packet_size);
-            let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
-
-            if !success {
-                print_error!("Failed to send file part size packet!");
-                return false;
-            }
+            self.send_packet(&packet, 3000, EmptyTransferMode::After)
+                .map_err(|_| "Failed to send file part size packet!".to_string())?;
 
             let mut response = [0u8; 8];
-            let success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
-            if !success {
-                return false;
-            }
+            self.receive_packet(&mut response, 3000, EmptyTransferMode::None)?;
 
             match packets::Response::unpack(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
                 Ok(0) => {}
                 Ok(res) => {
-                    print_error!(
+                    return Err(format!(
                         "Unexpected file part size response!\nExpected: 0\nReceived: {}",
                         res
-                    );
-                    return false;
+                    ));
                 }
-                Err(_) => return false,
+                Err(_) => return Err("Failed to unpack file part size response!".to_string()),
             }
         }
 
         println!("Session begun.\n");
-        true
+        Ok(())
     }
 
-    pub(crate) fn end_session(&self) -> bool {
+    pub(crate) fn end_session(&self) -> Result<(), String> {
         println!("Ending session...");
 
         let packet = packets::SessionSetupPacket::create_end_session(0); // kRequestEndSession
-        let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
-
-        if !success {
-            println!();
-            print_error!("Failed to send end session packet!");
-            return false;
-        }
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to send end session packet!".to_string())?;
 
         let mut response = [0u8; 8];
-        let success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
-
-        if !success {
-            println!();
-            print_error!("Failed to receive session end confirmation!");
-            return false;
-        }
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+            .map_err(|_| "Failed to receive session end confirmation!".to_string())?;
 
         println!("Rebooting device...");
 
         let packet = packets::SessionSetupPacket::create_end_session(1); // kRequestRebootDevice
-        let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
-
-        if !success {
-            println!();
-            print_error!("Failed to send reboot device packet!");
-            return false;
-        }
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to send reboot device packet!".to_string())?;
 
         let mut response = [0u8; 8];
-        let success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+            .map_err(|_| "Failed to receive reboot confirmation!".to_string())?;
 
-        if !success {
-            println!();
-            print_error!("Failed to receive reboot confirmation!");
-            return false;
-        }
-
-        true
+        Ok(())
     }
 
-    fn send_bulk_transfer(
-        &self,
-        data: *const u8,
-        length: i32,
-        timeout: i32,
-        retry: bool,
-    ) -> bool {
+    fn send_bulk_transfer(&self, data: &[u8], timeout: i32, retry: bool) -> bool {
         let handle = match self.handle.as_ref() {
             Some(h) => h,
             None => return false,
         };
 
-        let data_slice = if data.is_null() {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(data, length as usize) }
-        };
-        let mut result = handle.write_bulk(
-            self.out_endpoint,
-            data_slice,
-            Duration::from_millis(timeout as u64),
-        );
+        let mut result =
+            handle.write_bulk(self.out_endpoint, data, Duration::from_millis(timeout as u64));
 
         if result.is_err() && retry {
             let retry_delay = 250;
@@ -576,7 +494,7 @@ impl BridgeManager {
                 std::thread::sleep(Duration::from_millis(retry_delay * (i + 1)));
                 result = handle.write_bulk(
                     self.out_endpoint,
-                    data_slice,
+                    data,
                     Duration::from_millis(timeout as u64),
                 );
                 if result.is_ok() {
@@ -595,36 +513,19 @@ impl BridgeManager {
         }
 
         match result {
-            Ok(transferred) => transferred == length as usize,
+            Ok(transferred) => transferred == data.len(),
             Err(_) => false,
         }
     }
 
-    fn receive_bulk_transfer(
-        &self,
-        data: *mut u8,
-        length: i32,
-        timeout: i32,
-        retry: bool,
-    ) -> i32 {
+    fn receive_bulk_transfer(&self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
         let handle = match self.handle.as_ref() {
             Some(h) => h,
             None => return -1,
         };
 
-        let mut dummy_data = 0u8;
-        let (data_ptr, data_len) = if data.is_null() {
-            (&mut dummy_data as *mut u8, 1)
-        } else {
-            (data, length)
-        };
-
-        let data_slice = unsafe { std::slice::from_raw_parts_mut(data_ptr, data_len as usize) };
-        let mut result = handle.read_bulk(
-            self.in_endpoint,
-            data_slice,
-            Duration::from_millis(timeout as u64),
-        );
+        let mut result =
+            handle.read_bulk(self.in_endpoint, data, Duration::from_millis(timeout as u64));
 
         if result.is_err() && retry {
             let retry_delay = 250;
@@ -642,7 +543,7 @@ impl BridgeManager {
                 std::thread::sleep(Duration::from_millis(retry_delay * (i + 1)));
                 result = handle.read_bulk(
                     self.in_endpoint,
-                    data_slice,
+                    data,
                     Duration::from_millis(timeout as u64),
                 );
                 if result.is_ok() {
@@ -671,9 +572,9 @@ impl BridgeManager {
         packet: &[u8],
         timeout: i32,
         empty_transfer_mode: EmptyTransferMode,
-    ) -> bool {
+    ) -> Result<(), ()> {
         if (empty_transfer_mode as u32) & (EmptyTransferMode::Before as u32) != 0
-            && !self.send_bulk_transfer(std::ptr::null(), 0, 100, false)
+            && !self.send_bulk_transfer(&[], 100, false)
             && self.verbose
         {
             print_warning!(
@@ -681,18 +582,18 @@ impl BridgeManager {
             );
         }
 
-        if !self.send_bulk_transfer(packet.as_ptr(), packet.len() as i32, timeout, true) {
-            return false;
+        if !self.send_bulk_transfer(packet, timeout, true) {
+            return Err(());
         }
 
         if (empty_transfer_mode as u32) & (EmptyTransferMode::After as u32) != 0
-            && !self.send_bulk_transfer(std::ptr::null(), 0, 100, false)
+            && !self.send_bulk_transfer(&[], 100, false)
             && self.verbose
         {
             print_warning!("Empty bulk transfer after sending packet failed. Continuing anyway...");
         }
 
-        true
+        Ok(())
     }
 
     fn receive_packet(
@@ -700,9 +601,9 @@ impl BridgeManager {
         packet: &mut [u8],
         timeout: i32,
         empty_transfer_mode: EmptyTransferMode,
-    ) -> bool {
+    ) -> Result<(), String> {
         if (empty_transfer_mode as u32) & (EmptyTransferMode::Before as u32) != 0
-            && self.receive_bulk_transfer(std::ptr::null_mut(), 0, 100, false) < 0
+            && self.receive_bulk_transfer(&mut [], 100, false) < 0
             && self.verbose
         {
             print_warning!(
@@ -710,26 +611,22 @@ impl BridgeManager {
             );
         }
 
-        let received_size =
-            self.receive_bulk_transfer(packet.as_mut_ptr(), packet.len() as i32, timeout, true);
+        let received_size = self.receive_bulk_transfer(packet, timeout, true);
 
         if received_size < 0 {
-            return false;
+            return Err("Failed to receive packet!".to_string());
         }
 
         if received_size as usize != packet.len() {
-            if self.verbose {
-                print_error!(
-                    "Incorrect packet size received - expected size = {}, received size = {}.",
-                    packet.len(),
-                    received_size
-                );
-            }
-            return false;
+            return Err(format!(
+                "Incorrect packet size received - expected size = {}, received size = {}.",
+                packet.len(),
+                received_size
+            ));
         }
 
         if (empty_transfer_mode as u32) & (EmptyTransferMode::After as u32) != 0
-            && self.receive_bulk_transfer(std::ptr::null_mut(), 0, 100, false) < 0
+            && self.receive_bulk_transfer(&mut [], 100, false) < 0
             && self.verbose
         {
             print_warning!(
@@ -737,47 +634,35 @@ impl BridgeManager {
             );
         }
 
-        true
+        Ok(())
     }
 
-    pub(crate) fn send_pit_data(&self, pit_data: &PitData) -> bool {
+    pub(crate) fn send_pit_data(&self, pit_data: &PitData) -> Result<(), String> {
         let pit_buffer_size = pit_data.get_padded_size();
 
         // Start file transfer
         let packet = packets::PitFilePacket::create(packets::REQUEST_PIT_FILE_FLASH);
-        let mut success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
-
-        if !success {
-            print_error!("Failed to initialise PIT file transfer!");
-            return false;
-        }
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to initialise PIT file transfer!".to_string())?;
 
         let mut response = [0u8; 8];
-        success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+            .map_err(|_| "Failed to confirm transfer initialisation!".to_string())?;
 
-        if !success
-            || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err()
-        {
-            print_error!("Failed to confirm transfer initialisation!");
-            return false;
+        if packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+            return Err("Failed to confirm transfer initialisation!".to_string());
         }
 
         // Transfer file size
         let packet = packets::FlashPartPitFilePacket::create(pit_buffer_size);
-        success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to send PIT file part information!".to_string())?;
 
-        if !success {
-            print_error!("Failed to send PIT file part information!");
-            return false;
-        }
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+            .map_err(|_| "Failed to confirm sending of PIT file part information!".to_string())?;
 
-        success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
-
-        if !success
-            || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err()
-        {
-            print_error!("Failed to confirm sending of PIT file part information!");
-            return false;
+        if packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+            return Err("Failed to confirm sending of PIT file part information!".to_string());
         }
 
         // Create packed in-memory PIT file
@@ -786,67 +671,42 @@ impl BridgeManager {
 
         // Flash pit file
         let packet = packets::create_send_file_part_packet(&pit_buffer, pit_buffer_size);
-        success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to send file part packet!".to_string())?;
 
-        if !success {
-            print_error!("Failed to send file part packet!");
-            return false;
-        }
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+            .map_err(|_| "Failed to receive PIT file part response!".to_string())?;
 
-        success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
-
-        if !success
-            || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err()
-        {
-            print_error!("Failed to receive PIT file part response!");
-            return false;
+        if packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+            return Err("Failed to receive PIT file part response!".to_string());
         }
 
         // End pit file transfer
         let packet = packets::EndPitFileTransferPacket::create(pit_buffer_size);
-        success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to send end PIT file transfer packet!".to_string())?;
 
-        if !success {
-            print_error!("Failed to send end PIT file transfer packet!");
-            return false;
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+            .map_err(|_| "Failed to confirm end of PIT file transfer!".to_string())?;
+
+        if packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+            return Err("Failed to confirm end of PIT file transfer!".to_string());
         }
 
-        success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
-
-        if !success
-            || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err()
-        {
-            print_error!("Failed to confirm end of PIT file transfer!");
-            return false;
-        }
-
-        true
+        Ok(())
     }
 
-    fn receive_pit_file(&self) -> Vec<u8> {
+    fn receive_pit_file(&self) -> Result<Vec<u8>, String> {
         let packet = packets::PitFilePacket::create(packets::REQUEST_PIT_FILE_DUMP);
-        let mut success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
-
-        if !success {
-            print_error!("Failed to request receival of PIT file!");
-            return Vec::new();
-        }
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to request receival of PIT file!".to_string())?;
 
         let mut response = [0u8; 8];
-        success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
-        if !success {
-            print_error!("Failed to receive PIT file size!");
-            return Vec::new();
-        }
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+            .map_err(|_| "Failed to receive PIT file size!".to_string())?;
 
-        let file_size = match packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE)
-        {
-            Ok(size) => size,
-            Err(_) => {
-                print_error!("Failed to receive PIT file size!");
-                return Vec::new();
-            }
-        };
+        let file_size = packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE)
+            .map_err(|_| "Failed to receive PIT file size!".to_string())?;
 
         let mut transfer_count = file_size / 500; // ReceiveFilePartPacket::kDataSize
         if file_size % 500 != 0 {
@@ -857,12 +717,8 @@ impl BridgeManager {
 
         for i in 0..transfer_count {
             let packet = packets::DumpPartPitFilePacket::create(i);
-            let success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
-
-            if !success {
-                print_error!("Failed to request PIT file part #{}!", i);
-                return Vec::new();
-            }
+            self.send_packet(&packet, 3000, EmptyTransferMode::After)
+                .map_err(|_| format!("Failed to request PIT file part #{}!", i))?;
 
             let receive_empty_transfer_mode = if i == transfer_count - 1 {
                 EmptyTransferMode::After
@@ -871,55 +727,45 @@ impl BridgeManager {
             };
 
             let mut part_buffer = [0u8; 500]; // ReceiveFilePartPacket::kDataSize
-            let received_size =
-                self.receive_bulk_transfer(part_buffer.as_mut_ptr(), 500, 3000, true);
+            let received_size = self.receive_bulk_transfer(&mut part_buffer, 3000, true);
 
             if received_size < 0 {
-                print_error!("Failed to receive PIT file part #{}!", i);
-                return Vec::new();
+                return Err(format!("Failed to receive PIT file part #{}!", i));
             }
 
             buffer.extend_from_slice(&part_buffer[0..received_size as usize]);
 
             if receive_empty_transfer_mode == EmptyTransferMode::After {
-                let mut dummy = 0u8;
-                let _ = self.receive_bulk_transfer(&mut dummy, 0, 100, false);
+                let mut dummy = [0u8; 0];
+                let _ = self.receive_bulk_transfer(&mut dummy, 100, false);
             }
         }
 
         // End file transfer
         let packet = packets::PitFilePacket::create(packets::REQUEST_PIT_FILE_END);
-        success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to send request to end PIT file transfer!".to_string())?;
 
-        if !success {
-            print_error!("Failed to send request to end PIT file transfer!");
-            return Vec::new();
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+            .map_err(|_| "Failed to receive end PIT file transfer verification!".to_string())?;
+
+        if packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err() {
+            return Err("Failed to receive end PIT file transfer verification!".to_string());
         }
 
-        success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
-
-        if !success
-            || packets::Response::unpack(&response, packets::RESPONSE_TYPE_PIT_FILE).is_err()
-        {
-            print_error!("Failed to receive end PIT file transfer verification!");
-            return Vec::new();
-        }
-
-        buffer
+        Ok(buffer)
     }
 
-    pub(crate) fn download_pit_file(&self) -> Vec<u8> {
+    pub(crate) fn download_pit_file(&self) -> Result<Vec<u8>, String> {
         println!("Downloading device's PIT file...");
 
-        let pit_file = self.receive_pit_file();
+        let pit_file = self.receive_pit_file().map_err(|e| {
+            print_error!("{}", e);
+            "Failed to download PIT file!".to_string()
+        })?;
 
-        if pit_file.is_empty() {
-            print_error!("Failed to download PIT file!");
-        } else {
-            println!("PIT file download successful.\n");
-        }
-
-        pit_file
+        println!("PIT file download successful.\n");
+        Ok(pit_file)
     }
 
     pub(crate) fn send_file_from_reader<R: std::io::Read + std::io::Seek>(
@@ -929,24 +775,18 @@ impl BridgeManager {
         destination: FileTransferDestination,
         device_type: DeviceType,
         file_identifier: u32,
-    ) -> bool {
+    ) -> Result<(), String> {
         // Start file transfer
         let packet = packets::FileTransferPacket::create(packets::REQUEST_FILE_TRANSFER_FLASH);
-        let mut success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
-
-        if !success {
-            print_error!("Failed to initialise file transfer!");
-            return false;
-        }
+        self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to initialise file transfer!".to_string())?;
 
         let mut response = [0u8; 8];
-        success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+            .map_err(|_| "Failed to confirm transfer initialisation!".to_string())?;
 
-        if !success
-            || packets::Response::unpack(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err()
-        {
-            print_error!("Failed to confirm transfer initialisation!");
-            return false;
+        if packets::Response::unpack(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
+            return Err("Failed to confirm transfer initialisation!".to_string());
         }
 
         let sequence_count =
@@ -984,23 +824,14 @@ impl BridgeManager {
             let sequence_total_byte_count = sequence_size * self.file_transfer_packet_size;
 
             let packet = packets::FlashPartFileTransferPacket::create(sequence_total_byte_count);
-            success = self.send_packet(&packet, 3000, EmptyTransferMode::After);
+            self.send_packet(&packet, 3000, EmptyTransferMode::After)
+                .map_err(|_| "Failed to begin file transfer sequence!".to_string())?;
 
-            if !success {
-                println!();
-                print_error!("Failed to begin file transfer sequence!");
-                return false;
-            }
+            self.receive_packet(&mut response, 3000, EmptyTransferMode::None)
+                .map_err(|_| "Failed to confirm beginning of file transfer sequence!".to_string())?;
 
-            success = self.receive_packet(&mut response, 3000, EmptyTransferMode::None);
-
-            if !success
-                || packets::Response::unpack(&response, packets::RESPONSE_TYPE_FILE_TRANSFER)
-                    .is_err()
-            {
-                println!();
-                print_error!("Failed to confirm beginning of file transfer sequence!");
-                return false;
+            if packets::Response::unpack(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
+                return Err("Failed to confirm beginning of file transfer sequence!".to_string());
             }
 
             for file_part_index in 0..sequence_size {
@@ -1021,29 +852,25 @@ impl BridgeManager {
 
                 // Read data from reader
                 file_buffer.fill(0);
-                if let Err(e) = reader.read_exact(&mut file_buffer[..packet_byte_count as usize]) {
-                    print_error!("Failed to read from file: {}", e);
-                    return false;
-                }
+                reader
+                    .read_exact(&mut file_buffer[..packet_byte_count as usize])
+                    .map_err(|e| format!("Failed to read from file: {}", e))?;
 
                 let packet = packets::create_send_file_part_packet(
                     &file_buffer,
                     self.file_transfer_packet_size,
                 );
-                success = self.send_packet(&packet, 3000, send_empty_transfer_mode);
-
-                if !success {
-                    println!();
-                    print_error!("Failed to send file part packet!");
-                    return false;
-                }
+                self.send_packet(&packet, 3000, send_empty_transfer_mode)
+                    .map_err(|_| "Failed to send file part packet!".to_string())?;
 
                 // Response
-                success = self.receive_packet(
-                    &mut response,
-                    self.file_transfer_sequence_timeout as i32,
-                    EmptyTransferMode::None,
-                );
+                let mut success = self
+                    .receive_packet(
+                        &mut response,
+                        self.file_transfer_sequence_timeout as i32,
+                        EmptyTransferMode::None,
+                    )
+                    .is_ok();
 
                 if success {
                     let received_part_index = match packets::Response::unpack(
@@ -1058,52 +885,44 @@ impl BridgeManager {
                     };
                     if success && received_part_index != file_part_index {
                         println!();
-                        print_error!(
+                        return Err(format!(
                             "Expected file part index: {} Received: {}",
-                            file_part_index,
-                            received_part_index
-                        );
-                        return false;
+                            file_part_index, received_part_index
+                        ));
                     }
                 }
 
                 if !success {
                     let mut retry_success = false;
                     for _ in 0..4 {
-                        println!();
-                        println!("Retrying...");
+                        println!("\nRetrying...");
 
                         // Rewind reader pointer
-                        if let Err(e) =
-                            reader.seek(std::io::SeekFrom::Start(bytes_transferred as u64))
-                        {
-                            print_error!("Failed to seek in file: {}", e);
-                            return false;
-                        }
-                        if let Err(e) =
-                            reader.read_exact(&mut file_buffer[..packet_byte_count as usize])
-                        {
-                            print_error!("Failed to read from file: {}", e);
-                            return false;
-                        }
+                        reader
+                            .seek(std::io::SeekFrom::Start(bytes_transferred as u64))
+                            .map_err(|e| format!("Failed to seek in file: {}", e))?;
+                        reader
+                            .read_exact(&mut file_buffer[..packet_byte_count as usize])
+                            .map_err(|e| format!("Failed to read from file: {}", e))?;
 
                         let packet = packets::create_send_file_part_packet(
                             &file_buffer,
                             self.file_transfer_packet_size,
                         );
-                        success = self.send_packet(&packet, 3000, send_empty_transfer_mode);
-
-                        if !success {
+                        if self
+                            .send_packet(&packet, 3000, send_empty_transfer_mode)
+                            .is_err()
+                        {
                             continue;
                         }
 
-                        success = self.receive_packet(
+                        let res = self.receive_packet(
                             &mut response,
                             self.file_transfer_sequence_timeout as i32,
                             EmptyTransferMode::None,
                         );
 
-                        if success {
+                        if res.is_ok() {
                             let received_part_index = match packets::Response::unpack(
                                 &response,
                                 packets::RESPONSE_TYPE_SEND_FILE_PART,
@@ -1123,8 +942,7 @@ impl BridgeManager {
 
                     if !retry_success {
                         println!();
-                        print_error!("Failed to receive file part response!");
-                        return false;
+                        return Err("Failed to receive file part response!".to_string());
                     }
                 }
 
@@ -1162,50 +980,36 @@ impl BridgeManager {
                 ),
             };
 
-            success = self.send_packet(&packet, 3000, EmptyTransferMode::BeforeAndAfter);
+            self.send_packet(&packet, 3000, EmptyTransferMode::BeforeAndAfter)
+                .map_err(|_| "Failed to end file transfer sequence!".to_string())?;
 
-            if !success {
-                println!();
-                print_error!("Failed to end file transfer sequence!");
-                return false;
-            }
-
-            success = self.receive_packet(
+            self.receive_packet(
                 &mut response,
                 self.file_transfer_sequence_timeout as i32,
                 EmptyTransferMode::None,
-            );
+            )
+            .map_err(|_| "Failed to confirm end of file transfer sequence!".to_string())?;
 
-            if !success
-                || packets::Response::unpack(&response, packets::RESPONSE_TYPE_FILE_TRANSFER)
-                    .is_err()
-            {
-                println!();
-                print_error!("Failed to confirm end of file transfer sequence!");
-                return false;
+            if packets::Response::unpack(&response, packets::RESPONSE_TYPE_FILE_TRANSFER).is_err() {
+                return Err("Failed to confirm end of file transfer sequence!".to_string());
             }
         }
 
-        true
+        Ok(())
     }
 
-    pub(crate) fn send_total_bytes(&self, total_bytes: u64) -> bool {
+    pub(crate) fn send_total_bytes(&self, total_bytes: u64) -> Result<(), String> {
         let packet = packets::TotalBytesPacket::create(total_bytes);
         self.send_packet(&packet, 3000, EmptyTransferMode::After)
+            .map_err(|_| "Failed to send total bytes packet!".to_string())
     }
 
-    pub(crate) fn receive_session_setup_response(&self, result: &mut u32) -> bool {
+    pub(crate) fn receive_session_setup_response(&self, result: &mut u32) -> Result<(), String> {
         let mut response = [0u8; 8];
-        if !self.receive_packet(&mut response, 3000, EmptyTransferMode::None) {
-            return false;
-        }
-        match packets::Response::unpack(&response, packets::RESPONSE_TYPE_SESSION_SETUP) {
-            Ok(res) => {
-                *result = res;
-                true
-            }
-            Err(_) => false,
-        }
+        self.receive_packet(&mut response, 3000, EmptyTransferMode::None)?;
+        *result = packets::Response::unpack(&response, packets::RESPONSE_TYPE_SESSION_SETUP)
+            .map_err(|_| "Failed to unpack session setup response!".to_string())?;
+        Ok(())
     }
 }
 
@@ -1215,8 +1019,4 @@ impl Drop for BridgeManager {
             self.release_device_interface();
         }
     }
-}
-
-fn print_device_detection_failed() {
-    eprintln!("ERROR: Failed to detect compatible download-mode device.");
 }

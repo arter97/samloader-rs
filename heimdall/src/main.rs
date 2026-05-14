@@ -33,13 +33,6 @@ pub(crate) struct PartitionArg {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InitialiseResult {
-    Succeeded = 0,
-    Failed,
-    DeviceNotDetected,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileTransferDestination {
     Phone = 0,
     Modem = 1,
@@ -105,6 +98,10 @@ fn main() {
 
     // Filter out partition arguments for the flash command
     if args.len() > 1 && args[1] == "flash" {
+        let mut filtered_args = Vec::with_capacity(args.len());
+        filtered_args.push(args[0].clone());
+        filtered_args.push(args[1].clone());
+
         let mut i = 2;
         while i < args.len() {
             if args[i].starts_with("--") {
@@ -125,13 +122,14 @@ fn main() {
                         name: key.to_uppercase(),
                         filename: args[i + 1].clone(),
                     });
-                    args.remove(i); // Remove value
-                    args.remove(i); // Remove key
+                    i += 2;
                     continue;
                 }
             }
+            filtered_args.push(args[i].clone());
             i += 1;
         }
+        args = filtered_args;
     }
 
     let matches = Command::new("heimdall")

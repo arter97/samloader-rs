@@ -17,7 +17,6 @@ use crate::bridge_manager::BridgeManager;
 use crate::print_error;
 use crate::version;
 use crate::FileTransferDestination;
-use crate::InitialiseResult;
 use crate::PartitionArg;
 use libpit::{BinaryType, DeviceType, PitData, PitEntry};
 use std::fs::File;
@@ -44,7 +43,7 @@ pub(crate) fn action_flash(
     usb_log_level: &str,
     skip_size_check: bool,
     pit: &str,
-    partitions: &Vec<PartitionArg>,
+    partitions: &[PartitionArg],
 ) -> i32 {
     if repartition && pit.is_empty() {
         println!("If you wish to repartition then a PIT file must be specified.\n");
@@ -63,24 +62,29 @@ pub(crate) fn action_flash(
         }
     }
 
-    let mut partition_files = Vec::new();
-    for part in partitions {
-        match File::open(&part.filename) {
-            Ok(mut f) => {
-                let file_size = f.seek(SeekFrom::End(0)).unwrap() as u32;
-                f.seek(SeekFrom::Start(0)).unwrap();
-                partition_files.push(PartitionFile {
-                    argument_name: part.name.clone(),
-                    file: f,
-                    file_size,
-                });
-            }
-            Err(_) => {
-                print_error!("Failed to open file \"{}\"", part.filename);
-                return 1;
-            }
+    let partition_files: Vec<PartitionFile> = match partitions
+        .iter()
+        .map(|part| {
+            File::open(&part.filename)
+                .map_err(|_| part.filename.clone())
+                .and_then(|mut f| {
+                    let file_size = f.seek(SeekFrom::End(0)).map_err(|_| part.filename.clone())? as u32;
+                    f.seek(SeekFrom::Start(0)).map_err(|_| part.filename.clone())?;
+                    Ok(PartitionFile {
+                        argument_name: part.name.clone(),
+                        file: f,
+                        file_size,
+                    })
+                })
+        })
+        .collect::<Result<Vec<_>, String>>()
+    {
+        Ok(files) => files,
+        Err(filename) => {
+            print_error!("Failed to open file \"{}\"", filename);
+            return 1;
         }
-    }
+    };
 
     if partition_files.is_empty() {
         println!("No partitions to flash.");
@@ -95,33 +99,47 @@ pub(crate) fn action_flash(
     let mut bridge_manager = BridgeManager::new(verbose, wait);
     bridge_manager.set_usb_log_level(usb_log_level);
 
-    if bridge_manager.initialise() != InitialiseResult::Succeeded || !bridge_manager.begin_session()
-    {
+    if let Err(e) = bridge_manager.initialise() {
+        print_error!("{}", e);
         return 1;
     }
 
-    let mut success = send_total_transfer_size(
+    if let Err(e) = bridge_manager.begin_session() {
+        print_error!("{}", e);
+        return 1;
+    }
+
+    let mut success = true;
+
+    if let Err(e) = send_total_transfer_size(
         &bridge_manager,
         &partition_files,
         pit_file.as_ref(),
         repartition,
-    );
+    ) {
+        print_error!("{}", e);
+        success = false;
+    }
 
     if success {
         if let Some(pit_data) = get_pit_data(&bridge_manager, pit_file, repartition) {
-            success = flash_partitions(
+            if let Err(e) = flash_partitions(
                 &bridge_manager,
                 partition_files,
                 &pit_data,
                 repartition,
                 skip_size_check,
-            );
+            ) {
+                print_error!("{}", e);
+                success = false;
+            }
         } else {
             success = false;
         }
     }
 
-    if !bridge_manager.end_session() {
+    if let Err(e) = bridge_manager.end_session() {
+        print_error!("{}", e);
         success = false;
     }
 
@@ -137,7 +155,7 @@ fn send_total_transfer_size(
     partition_files: &[PartitionFile],
     pit_file: Option<&File>,
     repartition: bool,
-) -> bool {
+) -> Result<(), String> {
     let mut total_bytes: u64 = 0;
 
     for part in partition_files {
@@ -146,31 +164,24 @@ fn send_total_transfer_size(
 
     if repartition {
         if let Some(f) = pit_file {
-            let pit_size = f.metadata().unwrap().len();
+            let pit_size = f.metadata().map_err(|e| e.to_string())?.len();
             total_bytes += pit_size;
         }
     }
 
-    if !bridge_manager.send_total_bytes(total_bytes) {
-        print_error!("Failed to send total bytes packet!");
-        return false;
-    }
+    bridge_manager.send_total_bytes(total_bytes)?;
 
     let mut total_bytes_result = 0;
-    if !bridge_manager.receive_session_setup_response(&mut total_bytes_result) {
-        print_error!("Failed to receive session total bytes response!");
-        return false;
-    }
+    bridge_manager.receive_session_setup_response(&mut total_bytes_result)?;
 
     if total_bytes_result != 0 {
-        print_error!(
+        return Err(format!(
             "Unexpected session total bytes response!\nExpected: 0\nReceived:{}",
             total_bytes_result
-        );
-        return false;
+        ));
     }
 
-    true
+    Ok(())
 }
 
 fn get_pit_data(
@@ -199,24 +210,27 @@ fn get_pit_data(
     if repartition {
         local_pit_data
     } else {
-        let pit_buffer = bridge_manager.download_pit_file();
-        if pit_buffer.is_empty() {
-            return None;
-        }
-
-        match PitData::new(&pit_buffer) {
-            Ok(device_pit_data) => {
-                if let Some(local_pit) = local_pit_data {
-                    if device_pit_data != local_pit {
-                        println!("Local and device PIT files don't match and repartition wasn't specified!");
-                        print_error!("Flash aborted!");
-                        return None;
+        match bridge_manager.download_pit_file() {
+            Ok(pit_buffer) => {
+                match PitData::new(&pit_buffer) {
+                    Ok(device_pit_data) => {
+                        if let Some(local_pit) = local_pit_data {
+                            if device_pit_data != local_pit {
+                                println!("Local and device PIT files don't match and repartition wasn't specified!");
+                                print_error!("Flash aborted!");
+                                return None;
+                            }
+                        }
+                        Some(device_pit_data)
+                    }
+                    Err(_) => {
+                        print_error!("Failed to unpack device's PIT file!");
+                        None
                     }
                 }
-                Some(device_pit_data)
             }
-            Err(_) => {
-                print_error!("Failed to unpack device's PIT file!");
+            Err(e) => {
+                print_error!("{}", e);
                 None
             }
         }
@@ -229,7 +243,7 @@ fn flash_partitions(
     pit_data: &PitData,
     repartition: bool,
     skip_size_check: bool,
-) -> bool {
+) -> Result<(), String> {
     let mut partition_flash_infos = Vec::new();
 
     for part_file in partition_files {
@@ -255,11 +269,10 @@ fn flash_partitions(
                         if partition_size > 0
                             && (part_file.file_size as u64) > partition_size * block_size
                         {
-                            print_error!(
+                            return Err(format!(
                                 "{} partition is too small for given file. Use --skip-size-check to flash anyways.",
                                 part_file.argument_name
-                            );
-                            return false;
+                            ));
                         }
                     }
                 }
@@ -271,23 +284,18 @@ fn flash_partitions(
                 });
             }
             None => {
-                print_error!(
+                return Err(format!(
                     "Partition \"{}\" does not exist in the specified PIT.",
                     part_file.argument_name
-                );
-                return false;
+                ));
             }
         }
     }
 
     if repartition {
         println!("Uploading PIT");
-        if bridge_manager.send_pit_data(pit_data) {
-            println!("PIT upload successful\n");
-        } else {
-            print_error!("PIT upload failed!\n");
-            return false;
-        }
+        bridge_manager.send_pit_data(pit_data)?;
+        println!("PIT upload successful\n");
     }
 
     for mut info in partition_flash_infos {
@@ -305,19 +313,15 @@ fn flash_partitions(
             info.pit_entry.identifier
         };
 
-        if bridge_manager.send_file_from_reader(
+        bridge_manager.send_file_from_reader(
             &mut info.file,
             info.file_size,
             destination,
             info.pit_entry.device_type,
             identifier,
-        ) {
-            println!("{} upload successful\n", info.pit_entry.partition_name);
-        } else {
-            print_error!("{} upload failed!\n", info.pit_entry.partition_name);
-            return false;
-        }
+        )?;
+        println!("{} upload successful\n", info.pit_entry.partition_name);
     }
 
-    true
+    Ok(())
 }

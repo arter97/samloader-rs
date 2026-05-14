@@ -19,9 +19,10 @@ pub(crate) fn action_detect(verbose: bool, wait: bool, usb_log_level: &str) -> i
     let mut bridge_manager = BridgeManager::new(verbose, wait);
     bridge_manager.set_usb_log_level(usb_log_level);
 
-    if bridge_manager.detect_device() {
-        0
-    } else {
+    if let Err(e) = bridge_manager.detect_device() {
+        eprintln!("ERROR: {}", e);
         1
+    } else {
+        0
     }
 }

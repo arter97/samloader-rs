@@ -16,7 +16,6 @@
 use crate::print_error;
 use crate::version;
 use crate::BridgeManager;
-use crate::InitialiseResult;
 use std::fs::File;
 use std::io::Write;
 use std::thread::sleep;
@@ -45,25 +44,33 @@ pub(crate) fn action_download_pit(output: &str, verbose: bool, wait: bool, usb_l
     let mut bridge_manager = BridgeManager::new(verbose, wait);
     bridge_manager.set_usb_log_level(usb_log_level);
 
-    if bridge_manager.initialise() != InitialiseResult::Succeeded || !bridge_manager.begin_session()
-    {
+    if let Err(e) = bridge_manager.initialise() {
+        print_error!("{}", e);
         return 1;
     }
 
-    let pit_buffer = bridge_manager.download_pit_file();
+    if let Err(e) = bridge_manager.begin_session() {
+        print_error!("{}", e);
+        return 1;
+    }
 
     let mut success = true;
 
-    if !pit_buffer.is_empty() {
-        if let Err(e) = output_file.write_all(&pit_buffer) {
-            print_error!("Failed to write PIT data to output file: {}", e);
+    match bridge_manager.download_pit_file() {
+        Ok(pit_buffer) => {
+            if let Err(e) = output_file.write_all(&pit_buffer) {
+                print_error!("Failed to write PIT data to output file: {}", e);
+                success = false;
+            }
+        }
+        Err(e) => {
+            print_error!("{}", e);
             success = false;
         }
-    } else {
-        success = false;
     }
 
-    if !bridge_manager.end_session() {
+    if let Err(e) = bridge_manager.end_session() {
+        print_error!("{}", e);
         success = false;
     }
 

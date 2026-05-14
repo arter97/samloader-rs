@@ -32,12 +32,6 @@ pub(crate) struct PartitionArg {
     pub(crate) filename: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FileTransferDestination {
-    Phone = 0,
-    Modem = 1,
-}
-
 #[macro_export]
 macro_rules! print_warning {
     ($($arg:tt)*) => {

@@ -15,327 +15,250 @@
 
 use binrw::{io::Cursor, BinRead, BinWrite};
 
-const CONTROL_TYPE_SESSION: u32 = 0x64;
-const CONTROL_TYPE_PIT_FILE: u32 = 0x65;
-const CONTROL_TYPE_FILE_TRANSFER: u32 = 0x66;
-const CONTROL_TYPE_END_SESSION: u32 = 0x67;
-
-const REQUEST_BEGIN_SESSION: u32 = 0;
-const REQUEST_TOTAL_BYTES: u32 = 2;
-const REQUEST_FILE_PART_SIZE: u32 = 5;
-
-pub const REQUEST_PIT_FILE_FLASH: u32 = 0;
-pub const REQUEST_PIT_FILE_DUMP: u32 = 1;
-const REQUEST_PIT_FILE_PART: u32 = 2;
-pub const REQUEST_PIT_FILE_END: u32 = 3;
-
-pub const REQUEST_FILE_TRANSFER_FLASH: u32 = 0;
-#[allow(dead_code)]
-const REQUEST_FILE_TRANSFER_DUMP: u32 = 1;
-const REQUEST_FILE_TRANSFER_PART: u32 = 2;
-const REQUEST_FILE_TRANSFER_END: u32 = 3;
-
 pub const RESPONSE_TYPE_SEND_FILE_PART: u32 = 0x00;
 pub const RESPONSE_TYPE_SESSION_SETUP: u32 = 0x64;
 pub const RESPONSE_TYPE_PIT_FILE: u32 = 0x65;
 pub const RESPONSE_TYPE_FILE_TRANSFER: u32 = 0x66;
-#[allow(dead_code)]
-const RESPONSE_TYPE_END_SESSION: u32 = 0x67;
+pub const RESPONSE_TYPE_END_SESSION: u32 = 0x67;
 
-const DESTINATION_PHONE: u32 = 0x00;
-const DESTINATION_MODEM: u32 = 0x01;
-
-#[allow(dead_code)]
 #[derive(BinWrite)]
 #[brw(little)]
-struct ControlPacket {
-    pub control_type: u32,
-    #[brw(pad_after = 1020)]
-    pub _padding: (),
-}
+pub(crate) enum OutboundPacket {
+    #[brw(magic = 0x64u32)]
+    Session(SessionRequest),
 
-impl ControlPacket {
-    #[allow(dead_code)]
-    fn create(control_type: u32) -> Vec<u8> {
-        to_vec(ControlPacket {
-            control_type,
-            _padding: (),
-        })
-    }
+    #[brw(magic = 0x65u32)]
+    PitFile(PitFileRequest),
+
+    #[brw(magic = 0x66u32)]
+    FileTransfer(FileTransferRequest),
+
+    #[brw(magic = 0x67u32)]
+    EndSession {
+        request: u32,
+        #[brw(pad_after = 1016)]
+        _padding: (),
+    },
 }
 
 #[derive(BinWrite)]
 #[brw(little)]
-pub(crate) struct SessionSetupPacket {
-    pub control_type: u32,
-    pub request: u32,
-    #[brw(pad_after = 1016)]
-    pub _padding: (),
-}
-
-impl SessionSetupPacket {
-    pub(crate) fn create_end_session(request: u32) -> Vec<u8> {
-        to_vec(SessionSetupPacket {
-            control_type: CONTROL_TYPE_END_SESSION,
-            request,
-            _padding: (),
-        })
-    }
+pub(crate) enum SessionRequest {
+    #[brw(magic = 0u32)]
+    Begin {
+        protocol_version: u32,
+        #[brw(pad_after = 1012)]
+        _padding: (),
+    },
+    #[brw(magic = 2u32)]
+    TotalBytes {
+        total_bytes: u64,
+        #[brw(pad_after = 1008)]
+        _padding: (),
+    },
+    #[brw(magic = 5u32)]
+    FilePartSize {
+        size: u32,
+        #[brw(pad_after = 1012)]
+        _padding: (),
+    },
 }
 
 #[derive(BinWrite)]
 #[brw(little)]
-pub(crate) struct BeginSessionPacket {
-    pub control_type: u32,
-    pub request: u32,
-    pub protocol_version: u32,
-    #[brw(pad_after = 1012)]
-    pub _padding: (),
+pub(crate) enum PitFileRequest {
+    #[brw(magic = 0u32)]
+    Flash {
+        #[brw(pad_after = 1016)]
+        _padding: (),
+    },
+    #[brw(magic = 1u32)]
+    Dump {
+        #[brw(pad_after = 1016)]
+        _padding: (),
+    },
+    #[brw(magic = 2u32)]
+    Part(PitFilePart),
+    #[brw(magic = 3u32)]
+    End {
+        size: u32,
+        #[brw(pad_after = 1012)]
+        _padding: (),
+    },
 }
 
-impl BeginSessionPacket {
-    pub(crate) fn create() -> Vec<u8> {
-        to_vec(BeginSessionPacket {
-            control_type: CONTROL_TYPE_SESSION,
-            request: REQUEST_BEGIN_SESSION,
+#[derive(BinWrite)]
+#[brw(little)]
+pub(crate) enum PitFilePart {
+    Flash {
+        size: u32,
+        #[brw(pad_after = 1012)]
+        _padding: (),
+    },
+    Dump {
+        part: u32,
+        #[brw(pad_after = 1012)]
+        _padding: (),
+    },
+}
+
+#[derive(BinWrite)]
+#[brw(little)]
+pub(crate) enum FileTransferRequest {
+    #[brw(magic = 0u32)]
+    Flash {
+        #[brw(pad_after = 1016)]
+        _padding: (),
+    },
+    #[brw(magic = 1u32)]
+    Dump {
+        #[brw(pad_after = 1016)]
+        _padding: (),
+    },
+    #[brw(magic = 2u32)]
+    Part {
+        sequence_byte_count: u32,
+        #[brw(pad_after = 1012)]
+        _padding: (),
+    },
+    #[brw(magic = 3u32)]
+    End(FileTransferEnd),
+}
+
+#[derive(BinWrite)]
+#[brw(little)]
+pub(crate) enum FileTransferEnd {
+    #[brw(magic = 0u32)]
+    Phone {
+        sequence_byte_count: u32,
+        binary_type: u32,
+        device_type: u32,
+        partition_identifier: u32,
+        is_last_sequence: u32,
+        #[brw(pad_after = 992)]
+        _padding: (),
+    },
+    #[brw(magic = 1u32)]
+    Modem {
+        sequence_byte_count: u32,
+        binary_type: u32,
+        device_type: u32,
+        is_last_sequence: u32,
+        #[brw(pad_after = 996)]
+        _padding: (),
+    },
+}
+
+impl OutboundPacket {
+    pub(crate) fn begin_session() -> OutboundPacket {
+        OutboundPacket::Session(SessionRequest::Begin {
             protocol_version: 0x04,
             _padding: (),
         })
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct TotalBytesPacket {
-    pub control_type: u32,
-    pub request: u32,
-    pub total_bytes: u64,
-    #[brw(pad_after = 1008)]
-    pub _padding: (),
-}
-
-impl TotalBytesPacket {
-    pub(crate) fn create(total_bytes: u64) -> Vec<u8> {
-        to_vec(TotalBytesPacket {
-            control_type: CONTROL_TYPE_SESSION,
-            request: REQUEST_TOTAL_BYTES,
+    pub(crate) fn total_bytes(total_bytes: u64) -> OutboundPacket {
+        OutboundPacket::Session(SessionRequest::TotalBytes {
             total_bytes,
             _padding: (),
         })
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct FilePartSizePacket {
-    pub control_type: u32,
-    pub request: u32,
-    pub size: u32,
-    #[brw(pad_after = 1012)]
-    pub _padding: (),
-}
-
-impl FilePartSizePacket {
-    pub(crate) fn create(size: u32) -> Vec<u8> {
-        to_vec(FilePartSizePacket {
-            control_type: CONTROL_TYPE_SESSION,
-            request: REQUEST_FILE_PART_SIZE,
-            size,
-            _padding: (),
-        })
+    pub(crate) fn file_part_size(size: u32) -> OutboundPacket {
+        OutboundPacket::Session(SessionRequest::FilePartSize { size, _padding: () })
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct PitFilePacket {
-    pub control_type: u32,
-    pub request: u32,
-    #[brw(pad_after = 1016)]
-    pub _padding: (),
-}
-
-impl PitFilePacket {
-    pub(crate) fn create(request: u32) -> Vec<u8> {
-        to_vec(PitFilePacket {
-            control_type: CONTROL_TYPE_PIT_FILE,
+    pub(crate) fn end_session(request: u32) -> OutboundPacket {
+        OutboundPacket::EndSession {
             request,
             _padding: (),
-        })
+        }
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct FlashPartPitFilePacket {
-    pub control_type: u32,
-    pub request: u32,
-    pub size: u32,
-    #[brw(pad_after = 1012)]
-    pub _padding: (),
-}
+    pub(crate) fn pit_file_flash() -> OutboundPacket {
+        OutboundPacket::PitFile(PitFileRequest::Flash { _padding: () })
+    }
 
-impl FlashPartPitFilePacket {
-    pub(crate) fn create(size: u32) -> Vec<u8> {
-        to_vec(FlashPartPitFilePacket {
-            control_type: CONTROL_TYPE_PIT_FILE,
-            request: REQUEST_PIT_FILE_PART,
-            size,
+    pub(crate) fn pit_file_dump() -> OutboundPacket {
+        OutboundPacket::PitFile(PitFileRequest::Dump { _padding: () })
+    }
+
+    pub(crate) fn pit_file_end() -> OutboundPacket {
+        OutboundPacket::PitFile(PitFileRequest::End {
+            size: 0,
             _padding: (),
         })
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct DumpPartPitFilePacket {
-    pub control_type: u32,
-    pub request: u32,
-    pub part: u32,
-    #[brw(pad_after = 1012)]
-    pub _padding: (),
-}
+    pub(crate) fn flash_part_pit_file(size: u32) -> OutboundPacket {
+        OutboundPacket::PitFile(PitFileRequest::Part(PitFilePart::Flash {
+            size,
+            _padding: (),
+        }))
+    }
 
-impl DumpPartPitFilePacket {
-    pub(crate) fn create(part: u32) -> Vec<u8> {
-        to_vec(DumpPartPitFilePacket {
-            control_type: CONTROL_TYPE_PIT_FILE,
-            request: REQUEST_PIT_FILE_PART,
+    pub(crate) fn dump_part_pit_file(part: u32) -> OutboundPacket {
+        OutboundPacket::PitFile(PitFileRequest::Part(PitFilePart::Dump {
             part,
             _padding: (),
-        })
+        }))
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct EndPitFileTransferPacket {
-    pub control_type: u32,
-    pub request: u32,
-    pub size: u32,
-    #[brw(pad_after = 1012)]
-    pub _padding: (),
-}
-
-impl EndPitFileTransferPacket {
-    pub(crate) fn create(size: u32) -> Vec<u8> {
-        to_vec(EndPitFileTransferPacket {
-            control_type: CONTROL_TYPE_PIT_FILE,
-            request: REQUEST_PIT_FILE_END,
-            size,
-            _padding: (),
-        })
+    pub(crate) fn end_pit_file_transfer(size: u32) -> OutboundPacket {
+        OutboundPacket::PitFile(PitFileRequest::End { size, _padding: () })
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct FileTransferPacket {
-    pub control_type: u32,
-    pub request: u32,
-    #[brw(pad_after = 1016)]
-    pub _padding: (),
-}
-
-impl FileTransferPacket {
-    pub(crate) fn create(request: u32) -> Vec<u8> {
-        to_vec(FileTransferPacket {
-            control_type: CONTROL_TYPE_FILE_TRANSFER,
-            request,
-            _padding: (),
-        })
+    pub(crate) fn file_transfer_flash() -> OutboundPacket {
+        OutboundPacket::FileTransfer(FileTransferRequest::Flash { _padding: () })
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct FlashPartFileTransferPacket {
-    pub control_type: u32,
-    pub request: u32,
-    pub sequence_byte_count: u32,
-    #[brw(pad_after = 1012)]
-    pub _padding: (),
-}
+    pub(crate) fn file_transfer_dump() -> OutboundPacket {
+        OutboundPacket::FileTransfer(FileTransferRequest::Dump { _padding: () })
+    }
 
-impl FlashPartFileTransferPacket {
-    pub(crate) fn create(sequence_byte_count: u32) -> Vec<u8> {
-        to_vec(FlashPartFileTransferPacket {
-            control_type: CONTROL_TYPE_FILE_TRANSFER,
-            request: REQUEST_FILE_TRANSFER_PART,
+    pub(crate) fn flash_part_file_transfer(sequence_byte_count: u32) -> OutboundPacket {
+        OutboundPacket::FileTransfer(FileTransferRequest::Part {
             sequence_byte_count,
             _padding: (),
         })
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct EndModemFileTransferPacket {
-    pub control_type: u32,
-    pub request: u32,
-    pub destination: u32,
-    pub sequence_byte_count: u32,
-    pub unknown1: u32,
-    pub device_type: u32,
-    pub end_of_file: u32,
-    #[brw(pad_after = 996)]
-    pub _padding: (),
-}
-
-impl EndModemFileTransferPacket {
-    pub(crate) fn create(
+    pub(crate) fn end_modem_file_transfer(
         sequence_byte_count: u32,
-        unknown1: u32,
+        binary_type: u32,
         device_type: u32,
-        end_of_file: bool,
-    ) -> Vec<u8> {
-        to_vec(EndModemFileTransferPacket {
-            control_type: CONTROL_TYPE_FILE_TRANSFER,
-            request: REQUEST_FILE_TRANSFER_END,
-            destination: DESTINATION_MODEM,
+        is_last_sequence: bool,
+    ) -> OutboundPacket {
+        OutboundPacket::FileTransfer(FileTransferRequest::End(FileTransferEnd::Modem {
             sequence_byte_count,
-            unknown1,
+            binary_type,
             device_type,
-            end_of_file: if end_of_file { 1 } else { 0 },
+            is_last_sequence: if is_last_sequence { 1 } else { 0 },
             _padding: (),
-        })
+        }))
     }
-}
 
-#[derive(BinWrite)]
-#[brw(little)]
-pub(crate) struct EndPhoneFileTransferPacket {
-    pub control_type: u32,
-    pub request: u32,
-    pub destination: u32,
-    pub sequence_byte_count: u32,
-    pub unknown1: u32,
-    pub device_type: u32,
-    pub file_identifier: u32,
-    pub end_of_file: u32,
-    #[brw(pad_after = 992)]
-    pub _padding: (),
-}
-
-impl EndPhoneFileTransferPacket {
-    pub(crate) fn create(
+    pub(crate) fn end_phone_file_transfer(
         sequence_byte_count: u32,
-        unknown1: u32,
+        binary_type: u32,
         device_type: u32,
-        file_identifier: u32,
-        end_of_file: bool,
-    ) -> Vec<u8> {
-        to_vec(EndPhoneFileTransferPacket {
-            control_type: CONTROL_TYPE_FILE_TRANSFER,
-            request: REQUEST_FILE_TRANSFER_END,
-            destination: DESTINATION_PHONE,
+        partition_identifier: u32,
+        is_last_sequence: bool,
+    ) -> OutboundPacket {
+        OutboundPacket::FileTransfer(FileTransferRequest::End(FileTransferEnd::Phone {
             sequence_byte_count,
-            unknown1,
+            binary_type,
             device_type,
-            file_identifier,
-            end_of_file: if end_of_file { 1 } else { 0 },
+            partition_identifier,
+            is_last_sequence: if is_last_sequence { 1 } else { 0 },
             _padding: (),
-        })
+        }))
+    }
+
+    pub(crate) fn pack(&self) -> Vec<u8> {
+        let mut writer = Cursor::new(Vec::with_capacity(1024));
+        self.write_le(&mut writer).expect("Failed to write packet");
+        writer.into_inner()
     }
 }
 
@@ -344,29 +267,6 @@ impl EndPhoneFileTransferPacket {
 pub(crate) struct Response {
     pub response_type: u32,
     pub value: u32,
-}
-
-impl Response {
-    pub(crate) fn unpack(data: &[u8], expected_type: u32) -> Result<u32, u32> {
-        let mut reader = Cursor::new(data);
-        let response = Response::read_le(&mut reader).map_err(|_| 0u32)?;
-        if response.response_type == expected_type {
-            Ok(response.value)
-        } else {
-            Err(response.response_type)
-        }
-    }
-}
-
-fn to_vec<T: BinWrite>(packet: T) -> Vec<u8>
-where
-    for<'a> T::Args<'a>: Default,
-{
-    let mut writer = Cursor::new(Vec::with_capacity(1024));
-    packet
-        .write_le(&mut writer)
-        .expect("Failed to write packet");
-    writer.into_inner()
 }
 
 pub(crate) fn create_send_file_part_packet(buffer: &[u8], size: u32) -> Vec<u8> {

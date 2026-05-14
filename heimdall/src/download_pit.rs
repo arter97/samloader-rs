@@ -21,7 +21,12 @@ use std::io::Write;
 use std::thread::sleep;
 use std::time::Duration;
 
-pub(crate) fn action_download_pit(output: &str, verbose: bool, wait: bool, usb_log_level: &str) -> i32 {
+pub(crate) fn action_download_pit(
+    output: &str,
+    verbose: bool,
+    wait: bool,
+    usb_log_level: &str,
+) -> i32 {
     if output.is_empty() {
         println!("Output file was not specified.\n");
         return 0;

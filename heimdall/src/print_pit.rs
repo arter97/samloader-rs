@@ -69,17 +69,15 @@ pub(crate) fn action_print_pit(file: &str, verbose: bool, wait: bool, usb_log_le
         let mut device_pit_data = None;
 
         match bridge_manager.download_pit_file() {
-            Ok(device_pit) => {
-                match PitData::new(&device_pit) {
-                    Ok(pit_data) => {
-                        device_pit_data = Some(pit_data);
-                    }
-                    Err(_) => {
-                        print_error!("Failed to unpack device's PIT file!");
-                        success = false;
-                    }
+            Ok(device_pit) => match PitData::new(&device_pit) {
+                Ok(pit_data) => {
+                    device_pit_data = Some(pit_data);
                 }
-            }
+                Err(_) => {
+                    print_error!("Failed to unpack device's PIT file!");
+                    success = false;
+                }
+            },
             Err(e) => {
                 print_error!("{}", e);
                 success = false;

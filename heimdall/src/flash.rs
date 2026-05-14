@@ -16,9 +16,8 @@
 use crate::bridge_manager::BridgeManager;
 use crate::print_error;
 use crate::version;
-use crate::FileTransferDestination;
 use crate::PartitionArg;
-use libpit::{BinaryType, DeviceType, PitData, PitEntry};
+use libpit::{DeviceType, PitData, PitEntry};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::thread::sleep;
@@ -68,8 +67,11 @@ pub(crate) fn action_flash(
             File::open(&part.filename)
                 .map_err(|_| part.filename.clone())
                 .and_then(|mut f| {
-                    let file_size = f.seek(SeekFrom::End(0)).map_err(|_| part.filename.clone())? as u32;
-                    f.seek(SeekFrom::Start(0)).map_err(|_| part.filename.clone())?;
+                    let file_size =
+                        f.seek(SeekFrom::End(0))
+                            .map_err(|_| part.filename.clone())? as u32;
+                    f.seek(SeekFrom::Start(0))
+                        .map_err(|_| part.filename.clone())?;
                     Ok(PartitionFile {
                         argument_name: part.name.clone(),
                         file: f,
@@ -169,17 +171,7 @@ fn send_total_transfer_size(
         }
     }
 
-    bridge_manager.send_total_bytes(total_bytes)?;
-
-    let mut total_bytes_result = 0;
-    bridge_manager.receive_session_setup_response(&mut total_bytes_result)?;
-
-    if total_bytes_result != 0 {
-        return Err(format!(
-            "Unexpected session total bytes response!\nExpected: 0\nReceived:{}",
-            total_bytes_result
-        ));
-    }
+    bridge_manager.set_total_bytes(total_bytes)?;
 
     Ok(())
 }
@@ -211,24 +203,22 @@ fn get_pit_data(
         local_pit_data
     } else {
         match bridge_manager.download_pit_file() {
-            Ok(pit_buffer) => {
-                match PitData::new(&pit_buffer) {
-                    Ok(device_pit_data) => {
-                        if let Some(local_pit) = local_pit_data {
-                            if device_pit_data != local_pit {
-                                println!("Local and device PIT files don't match and repartition wasn't specified!");
-                                print_error!("Flash aborted!");
-                                return None;
-                            }
+            Ok(pit_buffer) => match PitData::new(&pit_buffer) {
+                Ok(device_pit_data) => {
+                    if let Some(local_pit) = local_pit_data {
+                        if device_pit_data != local_pit {
+                            println!("Local and device PIT files don't match and repartition wasn't specified!");
+                            print_error!("Flash aborted!");
+                            return None;
                         }
-                        Some(device_pit_data)
                     }
-                    Err(_) => {
-                        print_error!("Failed to unpack device's PIT file!");
-                        None
-                    }
+                    Some(device_pit_data)
                 }
-            }
+                Err(_) => {
+                    print_error!("Failed to unpack device's PIT file!");
+                    None
+                }
+            },
             Err(e) => {
                 print_error!("{}", e);
                 None
@@ -265,7 +255,11 @@ fn flash_partitions(
                     if device_type == DeviceType::MMC || device_type == DeviceType::UFS {
                         // MMC or UFS
                         let partition_size = e.block_count as u64;
-                        let block_size = if device_type == DeviceType::UFS { 4096 } else { 512 };
+                        let block_size = if device_type == DeviceType::UFS {
+                            4096
+                        } else {
+                            512
+                        };
                         if partition_size > 0
                             && (part_file.file_size as u64) > partition_size * block_size
                         {
@@ -301,25 +295,7 @@ fn flash_partitions(
     for mut info in partition_flash_infos {
         println!("Uploading {}", info.pit_entry.partition_name);
 
-        let destination = if info.pit_entry.binary_type == BinaryType::CommunicationProcessor {
-            FileTransferDestination::Modem
-        } else {
-            FileTransferDestination::Phone
-        };
-
-        let identifier = if destination == FileTransferDestination::Modem {
-            0xFFFFFFFF
-        } else {
-            info.pit_entry.identifier
-        };
-
-        bridge_manager.send_file_from_reader(
-            &mut info.file,
-            info.file_size,
-            destination,
-            info.pit_entry.device_type,
-            identifier,
-        )?;
+        bridge_manager.send_file_from_reader(&mut info.file, info.file_size, info.pit_entry)?;
         println!("{} upload successful\n", info.pit_entry.partition_name);
     }
 

@@ -17,17 +17,11 @@ use crate::bridge_manager::BridgeManager;
 use crate::print_error;
 use crate::version;
 use crate::PartitionArg;
-use libpit::{DeviceType, PitData, PitEntry};
+use libpit::{PitData, PitEntry};
 use std::fs::File;
 use std::io::Read;
 use std::thread::sleep;
 use std::time::Duration;
-
-struct PartitionFile {
-    argument_name: String,
-    file: File,
-    file_size: u64,
-}
 
 pub(crate) struct PartitionFlashInfo<'a> {
     pub(crate) pit_entry: &'a PitEntry,
@@ -61,34 +55,6 @@ pub(crate) fn action_flash(
         }
     }
 
-    let partition_files: Vec<PartitionFile> = match partitions
-        .iter()
-        .map(|part| {
-            File::open(&part.filename)
-                .and_then(|f| {
-                    let file_size = f.metadata()?.len();
-                    Ok(PartitionFile {
-                        argument_name: part.name.clone(),
-                        file: f,
-                        file_size,
-                    })
-                })
-                .map_err(|_| part.filename.clone())
-        })
-        .collect::<Result<Vec<_>, String>>()
-    {
-        Ok(files) => files,
-        Err(filename) => {
-            print_error!("Failed to open file \"{}\"", filename);
-            return 1;
-        }
-    };
-
-    if partition_files.is_empty() {
-        println!("No partitions to flash.");
-        return 0;
-    }
-
     // Info
     version::print_release_info();
     sleep(Duration::from_millis(1000));
@@ -107,50 +73,80 @@ pub(crate) fn action_flash(
         return 1;
     }
 
-    let mut success = true;
+    let Some(pit_data) = get_pit_data(&bridge_manager, pit_file.as_ref(), repartition) else {
+        return 1;
+    };
+
+    let mut partition_infos = Vec::new();
+
+    for part in partitions {
+        let entry = if let Ok(id) = part.name.parse::<u32>() {
+            pit_data.find_entry_by_id(id)
+        } else {
+            pit_data.find_entry_by_name(&part.name)
+        };
+
+        let Some(entry) = entry else {
+            print_error!(
+                "Partition \"{}\" does not exist in the specified PIT.",
+                part.name
+            );
+            return 1;
+        };
+
+        let Ok((file, file_size)) = File::open(&part.filename).and_then(|f| {
+            let file_size = f.metadata()?.len();
+            Ok((f, file_size))
+        }) else {
+            print_error!("Failed to open file \"{}\"", part.filename);
+            return 1;
+        };
+
+        // Size check
+        if !skip_size_check {
+            let partition_size = entry.partition_size();
+            if partition_size > 0 && file_size > partition_size {
+                print_error!(
+                    "{} partition is too small for given file. Use --skip-size-check to flash anyways.",
+                    part.name
+                );
+                return 1;
+            }
+        }
+
+        partition_infos.push(PartitionFlashInfo {
+            pit_entry: entry,
+            file,
+            file_size,
+        });
+    }
 
     if let Err(e) = send_total_transfer_size(
         &bridge_manager,
-        &partition_files,
+        &partition_infos,
         pit_file.as_ref(),
         repartition,
     ) {
         print_error!("{}", e);
-        success = false;
+        return 1;
     }
 
-    if success {
-        if let Some(pit_data) = get_pit_data(&bridge_manager, pit_file, repartition) {
-            if let Err(e) = flash_partitions(
-                &bridge_manager,
-                partition_files,
-                &pit_data,
-                repartition,
-                skip_size_check,
-            ) {
-                print_error!("{}", e);
-                success = false;
-            }
-        } else {
-            success = false;
-        }
+    if let Err(e) = flash_partitions(&bridge_manager, partition_infos, &pit_data, repartition) {
+        print_error!("{}", e);
+        return 1;
     }
 
     if let Err(e) = bridge_manager.end_session() {
         print_error!("{}", e);
-        success = false;
+        return 1;
     }
 
-    if success {
-        0
-    } else {
-        1
-    }
+    0
 }
 
 fn send_total_transfer_size(
     bridge_manager: &BridgeManager,
-    partition_files: &[PartitionFile],
+    partition_files: &[PartitionFlashInfo],
     pit_file: Option<&File>,
     repartition: bool,
 ) -> Result<(), String> {
@@ -174,7 +170,7 @@ fn send_total_transfer_size(
 
 fn get_pit_data(
     bridge_manager: &BridgeManager,
-    pit_file: Option<File>,
+    pit_file: Option<&File>,
     repartition: bool,
 ) -> Option<PitData> {
     let mut local_pit_data = None;
@@ -225,55 +221,17 @@ fn get_pit_data(
 
 fn flash_partitions(
     bridge_manager: &BridgeManager,
-    partition_files: Vec<PartitionFile>,
+    partition_files: Vec<PartitionFlashInfo>,
     pit_data: &PitData,
     repartition: bool,
-    skip_size_check: bool,
 ) -> Result<(), String> {
-    let mut partition_flash_infos = Vec::new();
-
-    for part_file in partition_files {
-        let entry = if let Ok(id) = part_file.argument_name.parse::<u32>() {
-            pit_data.find_entry_by_id(id)
-        } else {
-            pit_data.find_entry_by_name(&part_file.argument_name)
-        };
-
-        match entry {
-            Some(e) => {
-                // Size check
-                if !skip_size_check {
-                    let partition_size = e.partition_size();
-                    if partition_size > 0 && part_file.file_size > partition_size {
-                        return Err(format!(
-                            "{} partition is too small for given file. Use --skip-size-check to flash anyways.",
-                            part_file.argument_name
-                        ));
-                    }
-                }
-
-                partition_flash_infos.push(PartitionFlashInfo {
-                    pit_entry: e,
-                    file: part_file.file,
-                    file_size: part_file.file_size,
-                });
-            }
-            None => {
-                return Err(format!(
-                    "Partition \"{}\" does not exist in the specified PIT.",
-                    part_file.argument_name
-                ));
-            }
-        }
-    }
-
     if repartition {
         println!("Uploading PIT");
         bridge_manager.send_pit_data(pit_data)?;
         println!("PIT upload successful\n");
     }
 
-    for info in partition_flash_infos {
+    for info in partition_files {
         println!("Uploading {}", info.pit_entry.partition_name);
         bridge_manager.send_file(&info)?;
         println!("{} upload successful\n", info.pit_entry.partition_name);

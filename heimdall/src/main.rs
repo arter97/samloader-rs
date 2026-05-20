@@ -14,8 +14,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-extern crate libpit;
-
 mod bridge_manager;
 mod detect;
 mod download_pit;

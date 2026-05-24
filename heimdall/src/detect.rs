@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::BridgeManager;
+use crate::bridge_manager::BridgeManager;
 
 pub(crate) fn action_detect(verbose: bool, wait: bool, usb_log_level: &str) -> i32 {
     let mut bridge_manager = BridgeManager::new(verbose, wait);

@@ -13,9 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::bridge_manager::BridgeManager;
 use crate::print_error;
 use crate::version;
-use crate::BridgeManager;
 use libpit::PitData;
 use std::fs::File;
 use std::io::Read;

@@ -24,7 +24,6 @@ mod print_pit;
 mod tar_flash;
 mod version;
 
-use bridge_manager::BridgeManager;
 use clap::{Arg, ArgAction, Command};
 
 pub(crate) struct PartitionArg {

@@ -17,11 +17,11 @@ use binrw::{io::Cursor, BinRead, BinWrite};
 use libpit::{BinaryType, DeviceType, PitEntry};
 use std::fmt::Debug;
 
-pub const RESPONSE_TYPE_SEND_FILE_PART: u32 = 0x00;
-pub const RESPONSE_TYPE_SESSION_SETUP: u32 = 0x64;
-pub const RESPONSE_TYPE_PIT_FILE: u32 = 0x65;
-pub const RESPONSE_TYPE_FILE_TRANSFER: u32 = 0x66;
-pub const RESPONSE_TYPE_END_SESSION: u32 = 0x67;
+pub(crate) const RESPONSE_TYPE_SEND_FILE_PART: u32 = 0x00;
+pub(crate) const RESPONSE_TYPE_SESSION_SETUP: u32 = 0x64;
+pub(crate) const RESPONSE_TYPE_PIT_FILE: u32 = 0x65;
+pub(crate) const RESPONSE_TYPE_FILE_TRANSFER: u32 = 0x66;
+pub(crate) const RESPONSE_TYPE_END_SESSION: u32 = 0x67;
 
 pub(crate) trait OutboundPacket {
     fn pack(&self) -> Vec<u8>;
@@ -244,6 +244,15 @@ impl RequestPacket {
             partition_identifier: pit_entry.identifier,
             is_last_sequence: if is_last_sequence { 1 } else { 0 },
         }))
+    }
+
+    pub(crate) fn expected_response_type(&self) -> u32 {
+        match self {
+            RequestPacket::Session(_) => RESPONSE_TYPE_SESSION_SETUP,
+            RequestPacket::PitFile(_) => RESPONSE_TYPE_PIT_FILE,
+            RequestPacket::FileTransfer(_) => RESPONSE_TYPE_FILE_TRANSFER,
+            RequestPacket::EndSession(_) => RESPONSE_TYPE_END_SESSION,
+        }
     }
 }
 

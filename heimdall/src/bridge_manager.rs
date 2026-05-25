@@ -396,15 +396,9 @@ impl BridgeManager {
         println!("Beginning session...");
 
         let packet = RequestPacket::begin_session();
-        self.send_packet(&packet, 3000)
+        let device_default_packet_size = self
+            .request_and_response(&packet, 3000)
             .map_err(|_| "Failed to begin session!".to_string())?;
-
-        let response = self.receive_packet::<packets::Response>(3000)?;
-
-        if response.response_type != packets::RESPONSE_TYPE_SESSION_SETUP {
-            return Err("Failed to unpack session setup response!".to_string());
-        }
-        let device_default_packet_size = response.value;
 
         self.lz4_supported = (device_default_packet_size & 0x8000) != 0;
 
@@ -417,18 +411,14 @@ impl BridgeManager {
             self.file_transfer_sequence_max_length = 30;
 
             let packet = RequestPacket::file_part_size(self.file_transfer_packet_size as u32);
-            self.send_packet(&packet, 3000)
+            let value = self
+                .request_and_response(&packet, 3000)
                 .map_err(|_| "Failed to send file part size packet!".to_string())?;
 
-            let response = self.receive_packet::<packets::Response>(3000)?;
-
-            if response.response_type != packets::RESPONSE_TYPE_SESSION_SETUP {
-                return Err("Failed to unpack file part size response!".to_string());
-            }
-            if response.value != 0 {
+            if value != 0 {
                 return Err(format!(
                     "Unexpected file part size response!\nExpected: 0\nReceived: {}",
-                    response.value
+                    value
                 ));
             }
         }
@@ -441,30 +431,14 @@ impl BridgeManager {
         println!("Ending session...");
 
         let packet = RequestPacket::end_session();
-        self.send_packet(&packet, 3000)
+        self.request_and_response(&packet, 3000)
             .map_err(|_| "Failed to send end session packet!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to receive session end confirmation!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_END_SESSION {
-            return Err("Failed to receive session end confirmation!".to_string());
-        }
 
         println!("Rebooting device...");
 
         let packet = RequestPacket::reboot_device();
-        self.send_packet(&packet, 3000)
+        self.request_and_response(&packet, 3000)
             .map_err(|_| "Failed to send reboot device packet!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to receive reboot confirmation!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_END_SESSION {
-            return Err("Failed to receive reboot confirmation!".to_string());
-        }
 
         Ok(())
     }
@@ -575,34 +549,35 @@ impl BridgeManager {
         Ok(parsed)
     }
 
+    fn request_and_response(&self, packet: &RequestPacket, timeout: i32) -> Result<u32, String> {
+        self.send_packet(packet, timeout)
+            .map_err(|_| "Failed to send packet!".to_string())?;
+
+        let response = self.receive_packet::<packets::Response>(timeout)?;
+        let expected_type = packet.expected_response_type();
+
+        if response.response_type != expected_type {
+            return Err(format!(
+                "Response type mismatch! Expected: {}, Received: {}",
+                expected_type, response.response_type
+            ));
+        }
+
+        Ok(response.value)
+    }
+
     pub(crate) fn send_pit_data(&self, pit_data: &PitData) -> Result<(), String> {
         let pit_buffer_size = pit_data.get_padded_size();
 
         // Start file transfer
         let packet = RequestPacket::pit_file_flash();
-        self.send_packet(&packet, 3000)
+        self.request_and_response(&packet, 3000)
             .map_err(|_| "Failed to initialise PIT file transfer!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to confirm transfer initialisation!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_PIT_FILE {
-            return Err("Failed to confirm transfer initialisation!".to_string());
-        }
 
         // Transfer file size
         let packet = RequestPacket::flash_part_pit_file(pit_buffer_size);
-        self.send_packet(&packet, 3000)
+        self.request_and_response(&packet, 3000)
             .map_err(|_| "Failed to send PIT file part information!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to confirm sending of PIT file part information!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_PIT_FILE {
-            return Err("Failed to confirm sending of PIT file part information!".to_string());
-        }
 
         // Create packed in-memory PIT file
         let mut pit_buffer = vec![0u8; pit_buffer_size as usize];
@@ -623,33 +598,17 @@ impl BridgeManager {
 
         // End pit file transfer
         let packet = RequestPacket::end_pit_file_transfer(pit_buffer_size);
-        self.send_packet(&packet, 3000)
+        self.request_and_response(&packet, 3000)
             .map_err(|_| "Failed to send end PIT file transfer packet!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to confirm end of PIT file transfer!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_PIT_FILE {
-            return Err("Failed to confirm end of PIT file transfer!".to_string());
-        }
 
         Ok(())
     }
 
     fn receive_pit_file(&self) -> Result<Vec<u8>, String> {
         let packet = RequestPacket::pit_file_dump();
-        self.send_packet(&packet, 3000)
+        let file_size = self
+            .request_and_response(&packet, 3000)
             .map_err(|_| "Failed to request receival of PIT file!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to receive PIT file size!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_PIT_FILE {
-            return Err("Failed to receive PIT file size!".to_string());
-        }
-        let file_size = response.value;
 
         let mut transfer_count = file_size / 500; // ReceiveFilePartPacket::kDataSize
         if file_size % 500 != 0 {
@@ -671,16 +630,8 @@ impl BridgeManager {
 
         // End file transfer
         let packet = RequestPacket::pit_file_end();
-        self.send_packet(&packet, 3000)
+        self.request_and_response(&packet, 3000)
             .map_err(|_| "Failed to send request to end PIT file transfer!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to receive end PIT file transfer verification!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_PIT_FILE {
-            return Err("Failed to receive end PIT file transfer verification!".to_string());
-        }
 
         Ok(buffer)
     }
@@ -703,17 +654,8 @@ impl BridgeManager {
 
     pub(crate) fn send_file(&self, info: &mut crate::firmware::FirmwareFile) -> Result<(), String> {
         let packet = RequestPacket::file_transfer_flash();
-
-        self.send_packet(&packet, 3000)
+        self.request_and_response(&packet, 3000)
             .map_err(|_| "Failed to initialise file transfer!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to confirm transfer initialisation!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_FILE_TRANSFER {
-            return Err("Failed to confirm transfer initialisation!".to_string());
-        }
 
         let sequences = crate::firmware::SequenceIterator::new(
             &mut info.file,
@@ -751,17 +693,8 @@ impl BridgeManager {
         info: &mut crate::firmware::FirmwareLz4File,
     ) -> Result<(), String> {
         let packet = RequestPacket::lz4_file_transfer_flash();
-
-        self.send_packet(&packet, 3000)
+        self.request_and_response(&packet, 3000)
             .map_err(|_| "Failed to initialise file transfer!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to confirm transfer initialisation!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_FILE_TRANSFER {
-            return Err("Failed to confirm transfer initialisation!".to_string());
-        }
 
         let sequences = crate::firmware::Lz4SequenceIterator::new(
             &mut info.file,
@@ -808,16 +741,8 @@ impl BridgeManager {
             sequence_data.resize(sequence_data.len() + padding, 0);
         }
 
-        self.send_packet(start_packet, 3000)
+        self.request_and_response(start_packet, 3000)
             .map_err(|_| "Failed to begin file transfer sequence!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(3000)
-            .map_err(|_| "Failed to confirm beginning of file transfer sequence!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_FILE_TRANSFER {
-            return Err("Failed to confirm beginning of file transfer sequence!".to_string());
-        }
 
         for (file_part_index, file_buffer) in sequence_data
             .chunks(self.file_transfer_packet_size)
@@ -865,35 +790,22 @@ impl BridgeManager {
             }
         }
 
-        self.send_packet(end_packet, 3000)
+        self.request_and_response(end_packet, self.file_transfer_sequence_timeout as i32)
             .map_err(|_| "Failed to end file transfer sequence!".to_string())?;
-
-        let response = self
-            .receive_packet::<packets::Response>(self.file_transfer_sequence_timeout as i32)
-            .map_err(|_| "Failed to confirm end of file transfer sequence!".to_string())?;
-
-        if response.response_type != packets::RESPONSE_TYPE_FILE_TRANSFER {
-            return Err("Failed to confirm end of file transfer sequence!".to_string());
-        }
 
         Ok(())
     }
 
     pub(crate) fn set_total_bytes(&self, total_bytes: u64) -> Result<(), String> {
         let packet = RequestPacket::total_bytes(total_bytes);
-        self.send_packet(&packet, 3000)
+        let value = self
+            .request_and_response(&packet, 3000)
             .map_err(|_| "Failed to send total bytes packet!".to_string())?;
 
-        let response = self.receive_packet::<packets::Response>(3000)?;
-
-        if response.response_type != packets::RESPONSE_TYPE_SESSION_SETUP {
-            return Err("Failed to unpack session setup response!".to_string());
-        }
-
-        if response.value != 0 {
+        if value != 0 {
             return Err(format!(
                 "Unexpected session total bytes response!\nExpected: 0\nReceived: {}",
-                response.value
+                value
             ));
         }
 

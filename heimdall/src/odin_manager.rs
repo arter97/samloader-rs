@@ -94,6 +94,48 @@ impl OdinManager {
         self.context.set_log_level(self.usb_log_level);
     }
 
+    fn print_device_info(&self, device: &rusb::Device<Context>, handle: &DeviceHandle<Context>) {
+        if let Ok(descriptor) = device.device_descriptor() {
+            if let Ok(languages) = handle.read_languages(Duration::from_secs(1)) {
+                if !languages.is_empty() {
+                    if let Ok(manufacturer) = handle.read_manufacturer_string_ascii(&descriptor) {
+                        println!("      Manufacturer: \"{}\"", manufacturer);
+                    }
+                    if let Ok(product) = handle.read_product_string_ascii(&descriptor) {
+                        println!("           Product: \"{}\"", product);
+                    }
+                    if let Ok(serial) = handle.read_serial_number_string_ascii(&descriptor) {
+                        println!("         Serial No: \"{}\"", serial);
+                    }
+                }
+            }
+
+            println!("\n            length: {}", descriptor.length());
+            println!("      device class: {}", descriptor.class_code());
+            println!(
+                "               S/N: {}",
+                descriptor.serial_number_string_index().unwrap_or(0)
+            );
+            println!(
+                "           VID:PID: {:04X}:{:04X}",
+                descriptor.vendor_id(),
+                descriptor.product_id()
+            );
+
+            let version = descriptor.device_version();
+            let bcd = (version.0 as u16) << 8 | (version.1 as u16) << 4 | (version.2 as u16);
+            println!("         bcdDevice: {:04X}", bcd);
+
+            println!(
+                "   iMan:iProd:iSer: {}:{}:{}",
+                descriptor.manufacturer_string_index().unwrap_or(0),
+                descriptor.product_string_index().unwrap_or(0),
+                descriptor.serial_number_string_index().unwrap_or(0)
+            );
+            println!("          nb confs: {}", descriptor.num_configurations());
+        }
+    }
+
     pub(crate) fn detect_device(&mut self) -> Result<(), OdinError> {
         if self.wait_for_device {
             println!("Waiting for device...");
@@ -179,46 +221,7 @@ impl OdinManager {
         }
 
         if self.verbose {
-            if let Ok(descriptor) = device.device_descriptor() {
-                if let Ok(languages) = handle.read_languages(Duration::from_secs(1)) {
-                    if !languages.is_empty() {
-                        if let Ok(manufacturer) = handle.read_manufacturer_string_ascii(&descriptor)
-                        {
-                            println!("      Manufacturer: \"{}\"", manufacturer);
-                        }
-                        if let Ok(product) = handle.read_product_string_ascii(&descriptor) {
-                            println!("           Product: \"{}\"", product);
-                        }
-                        if let Ok(serial) = handle.read_serial_number_string_ascii(&descriptor) {
-                            println!("         Serial No: \"{}\"", serial);
-                        }
-                    }
-                }
-
-                println!("\n            length: {}", descriptor.length());
-                println!("      device class: {}", descriptor.class_code());
-                println!(
-                    "               S/N: {}",
-                    descriptor.serial_number_string_index().unwrap_or(0)
-                );
-                println!(
-                    "           VID:PID: {:04X}:{:04X}",
-                    descriptor.vendor_id(),
-                    descriptor.product_id()
-                );
-
-                let version = descriptor.device_version();
-                let bcd = (version.0 as u16) << 8 | (version.1 as u16) << 4 | (version.2 as u16);
-                println!("         bcdDevice: {:04X}", bcd);
-
-                println!(
-                    "   iMan:iProd:iSer: {}:{}:{}",
-                    descriptor.manufacturer_string_index().unwrap_or(0),
-                    descriptor.product_string_index().unwrap_or(0),
-                    descriptor.serial_number_string_index().unwrap_or(0)
-                );
-                println!("          nb confs: {}", descriptor.num_configurations());
-            }
+            self.print_device_info(&device, &handle);
         }
 
         let config_descriptor = device

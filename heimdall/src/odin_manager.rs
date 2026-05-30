@@ -16,10 +16,16 @@
 use crate::error::OdinError;
 use crate::packets;
 use crate::packets::RequestPacket;
-use crate::print_warning;
 use libpit::{BinaryType, PitData};
 use rusb::{Context, DeviceHandle, LogLevel, UsbContext};
 use std::time::Duration;
+
+macro_rules! print_warning {
+    ($($arg:tt)*) => {
+        eprint!("WARNING: ");
+        eprintln!($($arg)*);
+    };
+}
 
 pub(crate) struct OdinManager {
     verbose: bool,

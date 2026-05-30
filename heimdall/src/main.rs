@@ -33,14 +33,6 @@ pub(crate) struct PartitionArg {
 }
 
 #[macro_export]
-macro_rules! print_warning {
-    ($($arg:tt)*) => {
-        eprint!("WARNING: ");
-        eprintln!($($arg)*);
-    };
-}
-
-#[macro_export]
 macro_rules! print_error {
     ($($arg:tt)*) => {
         eprint!("ERROR: ");

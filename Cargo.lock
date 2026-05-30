@@ -1222,7 +1222,6 @@ dependencies = [
  "md5",
  "rusb",
  "samloader-pit",
- "tar",
  "thiserror",
 ]
 

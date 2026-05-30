@@ -9,6 +9,5 @@ repository.workspace = true
 samloader-pit = { workspace = true }
 rusb = { workspace = true }
 binrw = { workspace = true }
-tar = { workspace = true }
 md5 = { workspace = true }
 thiserror = { workspace = true }

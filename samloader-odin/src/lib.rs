@@ -1,5 +1,4 @@
 // Copyright 2026 Google LLC
-// Copyright 2010-2017 Benjamin Dobell, Glass Echidna
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,16 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use samloader_odin::OdinManager;
+pub mod error;
+pub mod firmware;
+pub mod odin_manager;
+pub mod packets;
 
-pub(crate) fn action_detect(verbose: bool, wait: bool, usb_log_level: &str) -> i32 {
-    let mut odin_manager = OdinManager::new(verbose, wait);
-    odin_manager.set_usb_log_level(usb_log_level);
-
-    if let Err(e) = odin_manager.detect_device() {
-        eprintln!("ERROR: {}", e);
-        1
-    } else {
-        0
-    }
-}
+pub use error::OdinError;
+pub use firmware::{
+    verify_md5_footer, FirmwareFile, FirmwareInfo, FirmwareLz4File, FirmwareSource, Lz4FrameHeader,
+    TarEntryReader,
+};
+pub use odin_manager::OdinManager;

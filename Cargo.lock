@@ -198,13 +198,10 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "heimdall"
 version = "0.1.0"
 dependencies = [
- "binrw",
  "clap",
- "libpit",
- "md5",
- "rusb",
+ "samloader-odin",
+ "samloader-pit",
  "tar",
- "thiserror",
 ]
 
 [[package]]
@@ -218,14 +215,6 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
-
-[[package]]
-name = "libpit"
-version = "0.1.0"
-dependencies = [
- "binrw",
- "modular-bitfield",
-]
 
 [[package]]
 name = "libusb1-sys"
@@ -329,6 +318,26 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "windows-sys",
+]
+
+[[package]]
+name = "samloader-odin"
+version = "0.1.0"
+dependencies = [
+ "binrw",
+ "md5",
+ "rusb",
+ "samloader-pit",
+ "tar",
+ "thiserror",
+]
+
+[[package]]
+name = "samloader-pit"
+version = "0.1.0"
+dependencies = [
+ "binrw",
+ "modular-bitfield",
 ]
 
 [[package]]

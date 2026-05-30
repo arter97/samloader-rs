@@ -13,9 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::odin_manager::OdinManager;
 use crate::print_error;
-use libpit::PitData;
+use samloader_odin::OdinManager;
+use samloader_pit::PitData;
 use std::fs::File;
 use std::io::Read;
 

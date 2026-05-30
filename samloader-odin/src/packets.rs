@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use binrw::{io::Cursor, BinRead, BinWrite};
-use libpit::{BinaryType, DeviceType, PitEntry};
+use samloader_pit::{BinaryType, DeviceType, PitEntry};
 use std::fmt::Debug;
 
 pub(crate) const RESPONSE_TYPE_SEND_FILE_PART: u32 = 0x00;

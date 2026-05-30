@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use libpit::PitEntry;
 use md5::Context;
+use samloader_pit::PitEntry;
 use std::fs::File;
 use std::io::{Read, Result as IoResult, Seek, SeekFrom};
 
-pub(crate) fn verify_md5_footer(path: &str) -> Result<(), String> {
+pub fn verify_md5_footer(path: &str) -> Result<(), String> {
     let mut file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
     let metadata = file
         .metadata()
@@ -96,15 +96,15 @@ pub(crate) fn verify_md5_footer(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) struct TarEntryReader {
-    pub(crate) file: File,
-    pub(crate) start_offset: u64,
-    pub(crate) size: u64,
-    pub(crate) current_offset: u64,
+pub struct TarEntryReader {
+    pub file: File,
+    pub start_offset: u64,
+    pub size: u64,
+    pub current_offset: u64,
 }
 
 impl TarEntryReader {
-    pub(crate) fn new(mut file: File, start_offset: u64, size: u64) -> IoResult<Self> {
+    pub fn new(mut file: File, start_offset: u64, size: u64) -> IoResult<Self> {
         file.seek(SeekFrom::Start(start_offset))?;
         Ok(Self {
             file,
@@ -168,7 +168,7 @@ impl Seek for TarEntryReader {
     }
 }
 
-pub(crate) enum FirmwareSource {
+pub enum FirmwareSource {
     File(File),
     Tar(TarEntryReader),
 }
@@ -191,13 +191,13 @@ impl Seek for FirmwareSource {
     }
 }
 
-pub(crate) struct Lz4FrameHeader {
+pub struct Lz4FrameHeader {
     pub content_size: u64,
     pub block_max_size: usize,
 }
 
 impl Lz4FrameHeader {
-    pub(crate) fn from_read<R: Read>(reader: &mut R) -> Result<Self, String> {
+    pub fn from_read<R: Read>(reader: &mut R) -> Result<Self, String> {
         let mut magic_bytes = [0u8; 4];
         reader
             .read_exact(&mut magic_bytes)
@@ -281,19 +281,19 @@ impl Lz4FrameHeader {
     }
 }
 
-pub(crate) struct FirmwareFile<'a> {
-    pub(crate) pit_entry: &'a PitEntry,
-    pub(crate) file: FirmwareSource,
-    pub(crate) file_size: u64,
+pub struct FirmwareFile<'a> {
+    pub pit_entry: &'a PitEntry,
+    pub file: FirmwareSource,
+    pub file_size: u64,
 }
 
-pub(crate) struct FirmwareLz4File<'a> {
-    pub(crate) pit_entry: &'a PitEntry,
-    pub(crate) file: FirmwareSource,
-    pub(crate) header: Lz4FrameHeader,
+pub struct FirmwareLz4File<'a> {
+    pub pit_entry: &'a PitEntry,
+    pub file: FirmwareSource,
+    pub header: Lz4FrameHeader,
 }
 
-pub(crate) enum FirmwareInfo<'a> {
+pub enum FirmwareInfo<'a> {
     Normal(FirmwareFile<'a>),
     Lz4(FirmwareLz4File<'a>),
 }

@@ -13,13 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::firmware::{
-    FirmwareFile, FirmwareInfo, FirmwareLz4File, FirmwareSource, Lz4FrameHeader,
-};
-use crate::odin_manager::OdinManager;
 use crate::print_error;
 use crate::PartitionArg;
-use libpit::PitData;
+use samloader_odin::{
+    FirmwareFile, FirmwareInfo, FirmwareLz4File, FirmwareSource, Lz4FrameHeader, OdinManager,
+};
+use samloader_pit::PitData;
 use std::borrow::Cow;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};

@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    "libpit",
+    "samloader-pit",
+    "samloader-odin",
     "heimdall",
 ]
 resolver = "2"

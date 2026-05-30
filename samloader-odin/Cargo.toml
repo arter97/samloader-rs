@@ -1,0 +1,12 @@
+[package]
+name = "samloader-odin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+samloader-pit = { path = "../samloader-pit" }
+rusb = "0.9"
+binrw = "0.15"
+tar = "0.4"
+md5 = "0.8"
+thiserror = "2"

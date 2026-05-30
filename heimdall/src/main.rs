@@ -16,11 +16,7 @@
 
 mod detect;
 mod download_pit;
-mod error;
-mod firmware;
 mod flash;
-mod odin_manager;
-mod packets;
 mod print_pit;
 mod tar_flash;
 mod version;

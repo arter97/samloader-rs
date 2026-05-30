@@ -16,8 +16,8 @@
 use crate::error::OdinError;
 use crate::packets;
 use crate::packets::RequestPacket;
-use libpit::{BinaryType, PitData};
 use rusb::{Context, DeviceHandle, LogLevel, UsbContext};
+use samloader_pit::{BinaryType, PitData};
 use std::time::Duration;
 
 macro_rules! print_warning {
@@ -27,7 +27,7 @@ macro_rules! print_warning {
     };
 }
 
-pub(crate) struct OdinManager {
+pub struct OdinManager {
     verbose: bool,
     wait_for_device: bool,
     context: Context,
@@ -65,7 +65,7 @@ const FILE_TRANSFER_SEQUENCE_TIMEOUT_DEFAULT: u32 = 30000;
 const USB_CLASS_CDC_DATA: u8 = 0x0A;
 
 impl OdinManager {
-    pub(crate) fn new(verbose: bool, wait_for_device: bool) -> Self {
+    pub fn new(verbose: bool, wait_for_device: bool) -> Self {
         let context = Context::new().expect("Failed to create libusb context");
         Self {
             verbose,
@@ -88,7 +88,7 @@ impl OdinManager {
         }
     }
 
-    pub(crate) fn set_usb_log_level(&mut self, level: &str) {
+    pub fn set_usb_log_level(&mut self, level: &str) {
         self.usb_log_level = match level.to_lowercase().as_str() {
             "debug" => LogLevel::Debug,
             "info" => LogLevel::Info,
@@ -142,7 +142,7 @@ impl OdinManager {
         }
     }
 
-    pub(crate) fn detect_device(&mut self) -> Result<(), OdinError> {
+    pub fn detect_device(&mut self) -> Result<(), OdinError> {
         if self.wait_for_device {
             println!("Waiting for device...");
         }
@@ -387,7 +387,7 @@ impl OdinManager {
         }
     }
 
-    pub(crate) fn initialise(&mut self) -> Result<(), OdinError> {
+    pub fn initialise(&mut self) -> Result<(), OdinError> {
         println!("Initialising connection...");
 
         self.find_device_interface()?;
@@ -398,7 +398,7 @@ impl OdinManager {
         Ok(())
     }
 
-    pub(crate) fn begin_session(&mut self) -> Result<(), OdinError> {
+    pub fn begin_session(&mut self) -> Result<(), OdinError> {
         println!("Beginning session...");
 
         let packet = RequestPacket::begin_session();
@@ -430,7 +430,7 @@ impl OdinManager {
         Ok(())
     }
 
-    pub(crate) fn end_session(&self) -> Result<(), OdinError> {
+    pub fn end_session(&self) -> Result<(), OdinError> {
         println!("Ending session...");
 
         let packet = RequestPacket::end_session();
@@ -573,7 +573,7 @@ impl OdinManager {
         Ok(response.value)
     }
 
-    pub(crate) fn send_pit_data(&self, pit_data: &PitData) -> Result<(), OdinError> {
+    pub fn send_pit_data(&self, pit_data: &PitData) -> Result<(), OdinError> {
         let pit_buffer_size = pit_data.get_padded_size();
 
         // Start file transfer
@@ -644,7 +644,7 @@ impl OdinManager {
         Ok(buffer)
     }
 
-    pub(crate) fn download_pit_file(&self) -> Result<Vec<u8>, OdinError> {
+    pub fn download_pit_file(&self) -> Result<Vec<u8>, OdinError> {
         println!("Downloading device's PIT file...");
 
         let pit_file = self
@@ -655,14 +655,11 @@ impl OdinManager {
         Ok(pit_file)
     }
 
-    pub(crate) fn is_lz4_supported(&self) -> bool {
+    pub fn is_lz4_supported(&self) -> bool {
         self.lz4_supported
     }
 
-    pub(crate) fn send_file(
-        &self,
-        info: &mut crate::firmware::FirmwareFile,
-    ) -> Result<(), OdinError> {
+    pub fn send_file(&self, info: &mut crate::firmware::FirmwareFile) -> Result<(), OdinError> {
         let packet = RequestPacket::file_transfer_flash();
         self.request_and_response(&packet, 3000)
             .map_err(|_| OdinError::FileTransferInitFailed)?;
@@ -698,7 +695,7 @@ impl OdinManager {
         Ok(())
     }
 
-    pub(crate) fn send_lz4_file(
+    pub fn send_lz4_file(
         &self,
         info: &mut crate::firmware::FirmwareLz4File,
     ) -> Result<(), OdinError> {
@@ -804,7 +801,7 @@ impl OdinManager {
         Ok(())
     }
 
-    pub(crate) fn set_total_bytes(&self, total_bytes: u64) -> Result<(), OdinError> {
+    pub fn set_total_bytes(&self, total_bytes: u64) -> Result<(), OdinError> {
         let packet = RequestPacket::total_bytes(total_bytes);
         let value = self
             .request_and_response(&packet, 3000)

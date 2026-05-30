@@ -16,7 +16,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub(crate) enum OdinError {
+pub enum OdinError {
     #[error("Failed to detect compatible download-mode device.")]
     DeviceNotFound,
 

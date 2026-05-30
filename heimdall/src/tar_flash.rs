@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::firmware::{
+use crate::print_error;
+use samloader_odin::{
     verify_md5_footer, FirmwareFile, FirmwareInfo, FirmwareLz4File, FirmwareSource, Lz4FrameHeader,
     TarEntryReader,
 };
-use crate::print_error;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;

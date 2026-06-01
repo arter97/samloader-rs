@@ -45,22 +45,26 @@ fn normalize_basename(path_str: &str) -> (String, bool) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn action_tar_flash(
     repartition: bool,
     verbose: bool,
     wait: bool,
     usb_log_level: &str,
     skip_size_check: bool,
+    skip_md5: bool,
     pit: Option<&str>,
     packages: &[String],
 ) -> i32 {
     // MD5 verification of .tar.md5 packages
-    for pkg in packages {
-        if pkg.to_lowercase().ends_with(".md5")
-            && let Err(e) = verify_md5_footer(pkg)
-        {
-            print_error!("{}", e);
-            return 1;
+    if !skip_md5 {
+        for pkg in packages {
+            if pkg.to_lowercase().ends_with(".md5")
+                && let Err(e) = verify_md5_footer(pkg)
+            {
+                print_error!("{}", e);
+                return 1;
+            }
         }
     }
 

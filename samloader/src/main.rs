@@ -264,6 +264,12 @@ fn main() {
                         .action(ArgAction::SetTrue)
                         .help(SKIP_SIZE_CHECK_HELP),
                 )
+                .arg(
+                    Arg::new("skip-md5")
+                        .long("skip-md5")
+                        .action(ArgAction::SetTrue)
+                        .help("Skip MD5 checksum verification"),
+                )
                 .arg(Arg::new("pit").long("pit").num_args(1).help(PIT_HELP))
                 .arg(
                     Arg::new("bl")
@@ -409,6 +415,7 @@ fn main() {
                 sub_matches.get_flag("wait"),
                 usb_log_level,
                 sub_matches.get_flag("skip-size-check"),
+                sub_matches.get_flag("skip-md5"),
                 sub_matches.get_one::<String>("pit").map(|s| s.as_str()),
                 &packages,
             )

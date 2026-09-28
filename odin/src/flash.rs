@@ -240,22 +240,22 @@ impl<'a> FlashManager<'a> {
     }
 
     /// Executes the flashing pipeline sequence.
-    pub fn execute(&mut self) -> Result<(), FlashError> {
+    pub async fn execute(&mut self) -> Result<(), FlashError> {
         // Step 0: Set device sales code if configured
         if let Some(sales_code) = self.sales_code {
             progress::println(&format!("Setting device sales code to {}...", sales_code));
-            self.session.set_sales_code(sales_code)?;
+            self.session.set_sales_code(sales_code).await?;
         }
 
         // If no packages, partitions, or explicit PIT are specified, complete session and return
         if self.packages.is_empty() && self.partitions.is_empty() && self.pit_path.is_none() {
             if self.erase {
-                self.session.nand_erase()?;
+                self.session.nand_erase().await?;
             }
             match self.reboot_mode {
-                RebootMode::Normal => self.session.reboot_device()?,
-                RebootMode::Download => self.session.reboot_to_download()?,
-                RebootMode::None => self.session.end_session()?,
+                RebootMode::Normal => self.session.reboot_device().await?,
+                RebootMode::Download => self.session.reboot_to_download().await?,
+                RebootMode::None => self.session.end_session().await?,
             }
             return Ok(());
         }
@@ -275,7 +275,7 @@ impl<'a> FlashManager<'a> {
         let resolved_entries = self.scan_tar_packages(&opened_packages)?;
 
         // Step 3: Flash PIT if available and download active PIT data from the device
-        let pit_data = self.download_and_parse_pit()?;
+        let pit_data = self.download_and_parse_pit().await?;
 
         // Step 4: Map entries and individual files to FirmwareInfo payloads
         let partition_infos = self.build_partition_infos(
@@ -303,7 +303,8 @@ impl<'a> FlashManager<'a> {
         }
 
         // Step 5: Flash payloads to the device
-        self.flash_partitions(partition_infos, self.reboot_mode)?;
+        self.flash_partitions(partition_infos, self.reboot_mode)
+            .await?;
 
         Ok(())
     }
@@ -465,19 +466,19 @@ impl<'a> FlashManager<'a> {
     }
 
     // Helper 3: Flash PIT if available and download active PIT data
-    fn download_and_parse_pit(&mut self) -> Result<PitData, FlashError> {
+    async fn download_and_parse_pit(&mut self) -> Result<PitData, FlashError> {
         if self.erase {
-            self.session.nand_erase()?;
+            self.session.nand_erase().await?;
         }
 
         if let Some(pit_bytes) = &self.pit_file_bytes {
             progress::println("Flashing PIT");
-            self.session.send_pit_info(pit_bytes)?;
+            self.session.send_pit_info(pit_bytes).await?;
             progress::println("PIT flash successful\n");
         }
 
         progress::println("Downloading device's PIT file");
-        let pit_buffer = self.session.receive_pit_info()?;
+        let pit_buffer = self.session.receive_pit_info().await?;
 
         let pit_data = PitData::new(&pit_buffer).map_err(FlashError::PitUnpackFailed)?;
         Ok(pit_data)
@@ -602,7 +603,7 @@ impl<'a> FlashManager<'a> {
     }
 
     // Helper 5: Flash deduplicated partition payloads to the device
-    fn flash_partitions(
+    async fn flash_partitions(
         &mut self,
         partition_infos: Vec<FirmwareInfo<'_>>,
         reboot_mode: RebootMode,
@@ -615,7 +616,7 @@ impl<'a> FlashManager<'a> {
             })
             .sum();
 
-        self.session.set_total_bytes(total_bytes)?;
+        self.session.set_total_bytes(total_bytes).await?;
 
         if let Some(super_used_size) = self.super_used_size
             && super_used_size > 0
@@ -629,6 +630,7 @@ impl<'a> FlashManager<'a> {
             progress::println("Checking available super partition size...");
             self.session
                 .check_super_size(check_size)
+                .await
                 .map_err(FlashError::SuperSizeCheckFailed)?;
         }
 
@@ -649,8 +651,8 @@ impl<'a> FlashManager<'a> {
             });
 
             let res = match info {
-                FirmwareInfo::Normal(f) => self.session.send_file(&f),
-                FirmwareInfo::Lz4(f) => self.session.send_lz4_file(&f),
+                FirmwareInfo::Normal(f) => self.session.send_file(&f).await,
+                FirmwareInfo::Lz4(f) => self.session.send_lz4_file(&f).await,
             };
 
             if let Err(e) = res {
@@ -661,14 +663,14 @@ impl<'a> FlashManager<'a> {
             progress::on_event(FlashEvent::PartitionEnd(&name));
         }
 
-        self.session.end_session()?;
+        self.session.end_session().await?;
 
         match reboot_mode {
             RebootMode::Normal => {
-                self.session.reboot_device()?;
+                self.session.reboot_device().await?;
             }
             RebootMode::Download => {
-                self.session.reboot_to_download()?;
+                self.session.reboot_to_download().await?;
             }
             RebootMode::None => {}
         }
@@ -734,21 +736,23 @@ mod tests {
             builder.finish().unwrap();
         }
 
-        let backend = Box::new(MockBackend::new(false));
-        let mut connection = OdinConnection::new(backend);
-        connection.init().unwrap();
-        let mut session = connection.begin_session().unwrap();
+        pollster::block_on(async {
+            let backend = Box::new(MockBackend::new(false));
+            let mut connection = OdinConnection::new(backend);
+            connection.init().await.unwrap();
+            let mut session = connection.begin_session().await.unwrap();
 
-        let tar_file = File::open(&tar_path).unwrap();
-        let opened_packages = vec![(tar_path.to_string_lossy().to_string(), tar_file)];
+            let tar_file = File::open(&tar_path).unwrap();
+            let opened_packages = vec![(tar_path.to_string_lossy().to_string(), tar_file)];
 
-        let mut manager = FlashManager::new(&mut session);
-        let resolved = manager.scan_tar_packages(&opened_packages).unwrap();
+            let mut manager = FlashManager::new(&mut session);
+            let resolved = manager.scan_tar_packages(&opened_packages).unwrap();
 
-        assert_eq!(manager.super_used_size, Some(27276104));
-        assert!(manager.has_download_list);
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].normalized_name, "boot.img");
+            assert_eq!(manager.super_used_size, Some(27276104));
+            assert!(manager.has_download_list);
+            assert_eq!(resolved.len(), 1);
+            assert_eq!(resolved[0].normalized_name, "boot.img");
+        });
 
         let _ = std::fs::remove_file(tar_path);
         let _ = std::fs::remove_dir(temp_dir);
@@ -756,62 +760,70 @@ mod tests {
 
     #[test]
     fn test_flash_partitions_super_size_preflight_success() {
-        let backend = Box::new(MockBackend::new(false).with_protocol_version(3));
-        let mut connection = OdinConnection::new(backend);
-        connection.init().unwrap();
-        let mut session = connection.begin_session().unwrap();
+        pollster::block_on(async {
+            let backend = Box::new(MockBackend::new(false).with_protocol_version(3));
+            let mut connection = OdinConnection::new(backend);
+            connection.init().await.unwrap();
+            let mut session = connection.begin_session().await.unwrap();
 
-        let mut manager = FlashManager::new(&mut session);
-        manager.super_used_size = Some(27276104);
-        manager.has_download_list = true;
+            let mut manager = FlashManager::new(&mut session);
+            manager.super_used_size = Some(27276104);
+            manager.has_download_list = true;
 
-        assert!(
-            manager
-                .flash_partitions(Vec::new(), RebootMode::None)
-                .is_ok()
-        );
+            assert!(
+                manager
+                    .flash_partitions(Vec::new(), RebootMode::None)
+                    .await
+                    .is_ok()
+            );
+        });
     }
 
     #[test]
     fn test_flash_partitions_super_size_preflight_rejection() {
-        let backend = Box::new(
-            MockBackend::new(false)
-                .with_protocol_version(3)
-                .with_fail_check_super_size(-1),
-        );
-        let mut connection = OdinConnection::new(backend);
-        connection.init().unwrap();
-        let mut session = connection.begin_session().unwrap();
+        pollster::block_on(async {
+            let backend = Box::new(
+                MockBackend::new(false)
+                    .with_protocol_version(3)
+                    .with_fail_check_super_size(-1),
+            );
+            let mut connection = OdinConnection::new(backend);
+            connection.init().await.unwrap();
+            let mut session = connection.begin_session().await.unwrap();
 
-        let mut manager = FlashManager::new(&mut session);
-        manager.super_used_size = Some(27276104);
-        manager.has_download_list = true;
+            let mut manager = FlashManager::new(&mut session);
+            manager.super_used_size = Some(27276104);
+            manager.has_download_list = true;
 
-        let res = manager.flash_partitions(Vec::new(), RebootMode::None);
-        assert!(matches!(res, Err(FlashError::SuperSizeCheckFailed(_))));
+            let res = manager.flash_partitions(Vec::new(), RebootMode::None).await;
+            assert!(matches!(res, Err(FlashError::SuperSizeCheckFailed(_))));
+        });
     }
 
     #[test]
     fn test_flash_partitions_super_size_preflight_skipped_on_legacy_protocol() {
-        // Even if fail_check_super_size is set, legacy protocol version 2 must skip opcode 0x6a
-        let backend = Box::new(
-            MockBackend::new(false)
-                .with_protocol_version(2)
-                .with_fail_check_super_size(-1),
-        );
-        let mut connection = OdinConnection::new(backend);
-        connection.init().unwrap();
-        let mut session = connection.begin_session().unwrap();
+        pollster::block_on(async {
+            // Even if fail_check_super_size is set, legacy protocol version 2 must skip opcode 0x6a
+            let backend = Box::new(
+                MockBackend::new(false)
+                    .with_protocol_version(2)
+                    .with_fail_check_super_size(-1),
+            );
+            let mut connection = OdinConnection::new(backend);
+            connection.init().await.unwrap();
+            let mut session = connection.begin_session().await.unwrap();
 
-        let mut manager = FlashManager::new(&mut session);
-        manager.super_used_size = Some(27276104);
-        manager.has_download_list = true;
+            let mut manager = FlashManager::new(&mut session);
+            manager.super_used_size = Some(27276104);
+            manager.has_download_list = true;
 
-        assert!(
-            manager
-                .flash_partitions(Vec::new(), RebootMode::None)
-                .is_ok()
-        );
+            assert!(
+                manager
+                    .flash_partitions(Vec::new(), RebootMode::None)
+                    .await
+                    .is_ok()
+            );
+        });
     }
 
     #[test]
@@ -841,18 +853,20 @@ mod tests {
             builder.finish().unwrap();
         }
 
-        let backend = Box::new(MockBackend::new(false));
-        let mut connection = OdinConnection::new(backend);
-        connection.init().unwrap();
-        let mut session = connection.begin_session().unwrap();
+        pollster::block_on(async {
+            let backend = Box::new(MockBackend::new(false));
+            let mut connection = OdinConnection::new(backend);
+            connection.init().await.unwrap();
+            let mut session = connection.begin_session().await.unwrap();
 
-        let tar_file = File::open(&tar_path).unwrap();
-        let opened_packages = vec![(tar_path.to_string_lossy().to_string(), tar_file)];
+            let tar_file = File::open(&tar_path).unwrap();
+            let opened_packages = vec![(tar_path.to_string_lossy().to_string(), tar_file)];
 
-        let mut manager = FlashManager::new(&mut session);
-        let result = manager.scan_tar_packages(&opened_packages);
+            let mut manager = FlashManager::new(&mut session);
+            let result = manager.scan_tar_packages(&opened_packages);
 
-        assert!(matches!(result, Err(FlashError::ArchiveCorrupted(_, _))));
+            assert!(matches!(result, Err(FlashError::ArchiveCorrupted(_, _))));
+        });
 
         let _ = std::fs::remove_file(tar_path);
         let _ = std::fs::remove_dir(temp_dir);
@@ -860,22 +874,24 @@ mod tests {
 
     #[test]
     fn test_download_and_parse_pit_flashes_available_pit() {
-        let backend = Box::new(MockBackend::new(false));
-        let mut connection = OdinConnection::new(backend);
-        connection.init().unwrap();
-        let mut session = connection.begin_session().unwrap();
+        pollster::block_on(async {
+            let backend = Box::new(MockBackend::new(false));
+            let mut connection = OdinConnection::new(backend);
+            connection.init().await.unwrap();
+            let mut session = connection.begin_session().await.unwrap();
 
-        let mut manager = FlashManager::new(&mut session);
-        manager.pit_file_bytes = Some(
-            include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/test-data/M3_EUR_OPEN_4G.pit"
-            ))
-            .to_vec(),
-        );
+            let mut manager = FlashManager::new(&mut session);
+            manager.pit_file_bytes = Some(
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/test-data/M3_EUR_OPEN_4G.pit"
+                ))
+                .to_vec(),
+            );
 
-        let pit_data = manager.download_and_parse_pit().unwrap();
-        // M3_EUR_OPEN_4G.pit has Mx-MDM, verifying PIT was sent and updated device state
-        assert_eq!(pit_data.cpu_bl_id.to_string_lossy(), "Mx-MDM");
+            let pit_data = manager.download_and_parse_pit().await.unwrap();
+            // M3_EUR_OPEN_4G.pit has Mx-MDM, verifying PIT was sent and updated device state
+            assert_eq!(pit_data.cpu_bl_id.to_string_lossy(), "Mx-MDM");
+        });
     }
 }

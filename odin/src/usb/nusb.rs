@@ -14,6 +14,54 @@
 // limitations under the License.
 
 use super::*;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use ::nusb::transfer::{Buffer, BulkOrInterrupt, Completion, EndpointDirection};
+use futures_timer::Delay;
+
+struct TransferFuture<'a, EpType: BulkOrInterrupt, Dir: EndpointDirection> {
+    ep: &'a mut ::nusb::Endpoint<EpType, Dir>,
+    delay: Delay,
+    cancelled: bool,
+}
+
+impl<'a, EpType: BulkOrInterrupt, Dir: EndpointDirection> Future
+    for TransferFuture<'a, EpType, Dir>
+{
+    type Output = Completion;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        if let Poll::Ready(completion) = this.ep.poll_next_complete(cx) {
+            return Poll::Ready(completion);
+        }
+        if !this.cancelled && Pin::new(&mut this.delay).poll(cx).is_ready() {
+            this.ep.cancel_all();
+            this.cancelled = true;
+            if let Poll::Ready(completion) = this.ep.poll_next_complete(cx) {
+                return Poll::Ready(completion);
+            }
+        }
+        Poll::Pending
+    }
+}
+
+async fn transfer_async<EpType: BulkOrInterrupt, Dir: EndpointDirection>(
+    ep: &mut ::nusb::Endpoint<EpType, Dir>,
+    buf: Buffer,
+    timeout: Duration,
+) -> Completion {
+    assert_eq!(ep.pending(), 0, "a transfer is already pending");
+    ep.submit(buf);
+    TransferFuture {
+        ep,
+        delay: Delay::new(timeout),
+        cancelled: false,
+    }
+    .await
+}
 
 /// USB communication backend using `nusb`.
 pub struct NusbBackend {
@@ -44,13 +92,14 @@ impl NusbBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl UsbBackend for NusbBackend {
     type UsbDevice = ::nusb::DeviceInfo;
 
-    fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError> {
+    async fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError> {
         let handle = device
             .open()
-            .wait()
+            .await
             .map_err(|e| OdinError::DeviceAccess(Box::new(e)))?;
 
         // Traverse configuration and select the class USB_CLASS_CDC_DATA interface with 2 endpoints
@@ -97,13 +146,13 @@ impl UsbBackend for NusbBackend {
 
         let interface = handle
             .detach_and_claim_interface(interface_index as u8)
-            .wait()
+            .await
             .map_err(|_| OdinError::InterfaceClaimFailed)?;
 
         if alt_setting_index != 0 {
             interface
                 .set_alt_setting(alt_setting_index as u8)
-                .wait()
+                .await
                 .map_err(|_| OdinError::InterfaceSetupFailed)?;
         }
 
@@ -124,13 +173,13 @@ impl UsbBackend for NusbBackend {
         })
     }
 
-    fn find_device<F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
+    async fn find_device<'a, F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
-        F: FnMut(u16, u16) -> bool,
+        F: FnMut(u16, u16) -> bool + Send + 'a,
     {
         let mut print_wait = false;
         loop {
-            if let Ok(devices) = ::nusb::list_devices().wait() {
+            if let Ok(devices) = ::nusb::list_devices().await {
                 for device in devices {
                     if predicate(device.vendor_id(), device.product_id()) {
                         return Ok(device);
@@ -140,7 +189,7 @@ impl UsbBackend for NusbBackend {
             if wait && !print_wait {
                 println!("Waiting for device...");
                 print_wait = true;
-                std::thread::sleep(Duration::from_secs(1));
+                Delay::new(Duration::from_secs(1)).await;
             } else {
                 break;
             }
@@ -149,12 +198,13 @@ impl UsbBackend for NusbBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl UsbTransfer for NusbBackend {
-    fn reset(&mut self) {
-        if let Err(e) = self.ep_in.clear_halt().wait() {
+    async fn reset(&mut self) {
+        if let Err(e) = self.ep_in.clear_halt().await {
             print_warning!(self.verbose, "Failed to clear IN endpoint halt: {}", e);
         }
-        if let Err(e) = self.ep_out.clear_halt().wait() {
+        if let Err(e) = self.ep_out.clear_halt().await {
             print_warning!(self.verbose, "Failed to clear OUT endpoint halt: {}", e);
         }
 
@@ -166,7 +216,7 @@ impl UsbTransfer for NusbBackend {
         };
         loop {
             let buf = ::nusb::transfer::Buffer::new(buf_size);
-            let completion = self.ep_in.transfer_blocking(buf, Duration::from_millis(10));
+            let completion = transfer_async(&mut self.ep_in, buf, Duration::from_millis(10)).await;
             match completion.status {
                 Ok(()) if completion.actual_len > 0 => continue,
                 _ => break,
@@ -174,16 +224,15 @@ impl UsbTransfer for NusbBackend {
         }
     }
 
-    fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
+    async fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
         let max_attempts = if retry { 6 } else { 1 };
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                std::thread::sleep(Duration::from_millis(250 * attempt));
+                Delay::new(Duration::from_millis(250 * attempt)).await;
             }
             let buf = ::nusb::transfer::Buffer::from(data.to_vec());
-            let completion = self
-                .ep_out
-                .transfer_blocking(buf, Duration::from_millis(timeout as u64));
+            let completion =
+                transfer_async(&mut self.ep_out, buf, Duration::from_millis(timeout as u64)).await;
             if completion.status.is_ok() {
                 return completion.actual_len == data.len();
             }
@@ -191,21 +240,20 @@ impl UsbTransfer for NusbBackend {
         false
     }
 
-    fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
+    async fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
         let max_attempts = if retry { 6 } else { 1 };
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                std::thread::sleep(Duration::from_millis(250 * attempt));
+                Delay::new(Duration::from_millis(250 * attempt)).await;
             }
             let max_packet_size = self.ep_in.max_packet_size();
             let mut requested_len = data.len();
             if !requested_len.is_multiple_of(max_packet_size) {
                 requested_len = ((requested_len / max_packet_size) + 1) * max_packet_size;
             }
-            let buf = ::nusb::transfer::Buffer::new(requested_len);
-            let completion = self
-                .ep_in
-                .transfer_blocking(buf, Duration::from_millis(timeout as u64));
+            let buf = Buffer::new(requested_len);
+            let completion =
+                transfer_async(&mut self.ep_in, buf, Duration::from_millis(timeout as u64)).await;
             if let Ok(()) = completion.status {
                 let to_copy = std::cmp::min(completion.actual_len, data.len());
                 data[..to_copy].copy_from_slice(&completion.buffer[..to_copy]);

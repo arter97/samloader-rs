@@ -136,50 +136,52 @@ pub(crate) fn action_flash(
 ) -> i32 {
     set_progress(CliProgress::new(verbose));
 
-    let usb = match create_backend(usb_backend, verbose, wait) {
-        Ok(u) => u,
-        Err(e) => {
+    pollster::block_on(async {
+        let usb = match create_backend(usb_backend, verbose, wait).await {
+            Ok(u) => u,
+            Err(e) => {
+                print_error!("{}", e);
+                return 1;
+            }
+        };
+        let mut connection = OdinConnection::new(usb);
+
+        if let Err(e) = connection.init().await {
             print_error!("{}", e);
             return 1;
         }
-    };
-    let mut connection = OdinConnection::new(usb);
 
-    if let Err(e) = connection.init() {
-        print_error!("{}", e);
-        return 1;
-    }
+        let mut session = match connection.begin_session().await {
+            Ok(s) => s,
+            Err(e) => {
+                print_error!("{}", e);
+                return 1;
+            }
+        };
 
-    let mut session = match connection.begin_session() {
-        Ok(s) => s,
-        Err(e) => {
+        let mapped_partitions: Vec<(Option<String>, String)> = partitions
+            .iter()
+            .map(|p| (p.name.clone(), p.filename.clone()))
+            .collect();
+
+        let mut flash_manager = FlashManager::new(&mut session)
+            .reboot_mode(reboot_mode)
+            .skip_size_check(skip_size_check)
+            .skip_md5(skip_md5)
+            .erase(erase)
+            .packages(packages)
+            .partitions(&mapped_partitions)
+            .sales_code(csc_code);
+
+        if let Some(pit_path) = pit {
+            flash_manager = flash_manager.pit(pit_path);
+        }
+
+        if let Err(e) = flash_manager.execute().await {
             print_error!("{}", e);
             return 1;
         }
-    };
 
-    let mapped_partitions: Vec<(Option<String>, String)> = partitions
-        .iter()
-        .map(|p| (p.name.clone(), p.filename.clone()))
-        .collect();
-
-    let mut flash_manager = FlashManager::new(&mut session)
-        .reboot_mode(reboot_mode)
-        .skip_size_check(skip_size_check)
-        .skip_md5(skip_md5)
-        .erase(erase)
-        .packages(packages)
-        .partitions(&mapped_partitions)
-        .sales_code(csc_code);
-
-    if let Some(pit_path) = pit {
-        flash_manager = flash_manager.pit(pit_path);
-    }
-
-    if let Err(e) = flash_manager.execute() {
-        print_error!("{}", e);
-        return 1;
-    }
-
-    0
+        0
+    })
 }

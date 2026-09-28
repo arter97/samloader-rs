@@ -37,10 +37,11 @@ impl SerialBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl UsbBackend for SerialBackend {
     type UsbDevice = serialport::SerialPortInfo;
 
-    fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError> {
+    async fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError> {
         let info = match &device.port_type {
             serialport::SerialPortType::UsbPort(info) => info,
             _ => return Err(OdinError::DeviceNotFound),
@@ -66,9 +67,9 @@ impl UsbBackend for SerialBackend {
         })
     }
 
-    fn find_device<F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
+    async fn find_device<'a, F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
-        F: FnMut(u16, u16) -> bool,
+        F: FnMut(u16, u16) -> bool + Send + 'a,
     {
         let mut print_wait = false;
         loop {
@@ -85,7 +86,7 @@ impl UsbBackend for SerialBackend {
             if wait && !print_wait {
                 println!("Waiting for device...");
                 print_wait = true;
-                std::thread::sleep(Duration::from_secs(1));
+                futures_timer::Delay::new(Duration::from_secs(1)).await;
             } else {
                 break;
             }
@@ -95,14 +96,15 @@ impl UsbBackend for SerialBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl UsbTransfer for SerialBackend {
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         if let Err(e) = self.port.clear(serialport::ClearBuffer::All) {
             print_warning!(self.verbose, "Failed to reset device! Result: {}", e);
         }
     }
 
-    fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
+    async fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
         if let Err(e) = self.port.set_timeout(Duration::from_millis(timeout as u64)) {
             print_warning!(self.verbose, "Failed to set serial port timeout: {}", e);
         }
@@ -118,7 +120,7 @@ impl UsbTransfer for SerialBackend {
                     written,
                     data.len()
                 );
-                std::thread::sleep(Duration::from_millis(250 * attempt));
+                futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
             }
 
             while written < data.len() {
@@ -163,7 +165,7 @@ impl UsbTransfer for SerialBackend {
         false
     }
 
-    fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
+    async fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
         if let Err(e) = self.port.set_timeout(Duration::from_millis(timeout as u64)) {
             print_warning!(self.verbose, "Failed to set serial port timeout: {}", e);
         }
@@ -173,7 +175,7 @@ impl UsbTransfer for SerialBackend {
         for attempt in 0..max_attempts {
             if attempt > 0 {
                 print_verbose!(self.verbose, " Retrying...");
-                std::thread::sleep(Duration::from_millis(250 * attempt));
+                futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
             }
 
             match self.port.read(data) {

@@ -19,6 +19,11 @@ fast-md5 = { workspace = true }
 serialport = { workspace = true, optional = true }
 thiserror = { workspace = true }
 lz4_flex = { workspace = true }
+async-trait = { workspace = true }
+futures-timer = { workspace = true }
+
+[dev-dependencies]
+pollster = { workspace = true }
 
 [features]
 default = ["nusb", "serialport"]

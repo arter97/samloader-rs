@@ -487,8 +487,9 @@ impl MockBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl UsbTransfer for MockBackend {
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         if self.verbose {
             eprintln!("MockBackend: connection reset");
         }
@@ -499,7 +500,7 @@ impl UsbTransfer for MockBackend {
         self.packet_size = self.profile.default_packet_size;
     }
 
-    fn send_data(&mut self, data: &[u8], _timeout: i32, _retry: bool) -> bool {
+    async fn send_data(&mut self, data: &[u8], _timeout: i32, _retry: bool) -> bool {
         if data.is_empty() {
             self.empty_send_count += 1;
             return true;
@@ -748,7 +749,7 @@ impl UsbTransfer for MockBackend {
         true
     }
 
-    fn receive_data(&mut self, data: &mut [u8], _timeout: i32, _retry: bool) -> i32 {
+    async fn receive_data(&mut self, data: &mut [u8], _timeout: i32, _retry: bool) -> i32 {
         if self.outgoing_queue.is_empty() {
             return 0;
         }
@@ -775,87 +776,91 @@ mod tests {
 
     #[test]
     fn test_sm_f968b_modern_profile_lifecycle() {
-        let profile = DeviceProfile::sm_f968b();
-        let backend = Box::new(MockBackend::with_profile(profile, false));
-        let mut connection = OdinConnection::new(backend);
+        pollster::block_on(async {
+            let profile = DeviceProfile::sm_f968b();
+            let backend = Box::new(MockBackend::with_profile(profile, false));
+            let mut connection = OdinConnection::new(backend);
 
-        // 1. DVIF diagnostics prior to init
-        let info = connection.query_device_info().unwrap();
-        assert_eq!(info.model.as_deref(), Some("SM-F968B"));
-        assert_eq!(info.storage_capacity_gb, Some(512));
-        assert_eq!(info.storage_vendor.as_deref(), Some("SAMSUNG"));
-        assert_eq!(info.storage_product_name.as_deref(), Some("KLUEG8UHDB"));
-        assert_eq!(info.sales_code.as_deref(), Some("TUR"));
+            // 1. DVIF diagnostics prior to init
+            let info = connection.query_device_info().await.unwrap();
+            assert_eq!(info.model.as_deref(), Some("SM-F968B"));
+            assert_eq!(info.storage_capacity_gb, Some(512));
+            assert_eq!(info.storage_vendor.as_deref(), Some("SAMSUNG"));
+            assert_eq!(info.storage_product_name.as_deref(), Some("KLUEG8UHDB"));
+            assert_eq!(info.sales_code.as_deref(), Some("TUR"));
 
-        // 2. Handshake
-        assert!(connection.init().is_ok());
+            // 2. Handshake
+            assert!(connection.init().await.is_ok());
 
-        // 3. Begin Session (protocol v3, LZ4 supported)
-        let mut session = connection.begin_session().unwrap();
-        assert_eq!(session.bootloader_protocol_version(), 3);
-        assert!(session.is_lz4_supported());
+            // 3. Begin Session (protocol v3, LZ4 supported)
+            let mut session = connection.begin_session().await.unwrap();
+            assert_eq!(session.bootloader_protocol_version(), 3);
+            assert!(session.is_lz4_supported());
 
-        // 4. Download PIT (Q7MQ_EUR_OPENX.pit is 18492 bytes)
-        let pit_bytes = session.receive_pit_info().unwrap();
-        assert_eq!(pit_bytes.len(), 18492);
-        let pit = PitData::new(&pit_bytes).unwrap();
-        assert_eq!(pit.cpu_bl_id.to_string_lossy(), "SM8750");
+            // 4. Download PIT (Q7MQ_EUR_OPENX.pit is 18492 bytes)
+            let pit_bytes = session.receive_pit_info().await.unwrap();
+            assert_eq!(pit_bytes.len(), 18492);
+            let pit = PitData::new(&pit_bytes).unwrap();
+            assert_eq!(pit.cpu_bl_id.to_string_lossy(), "SM8750");
 
-        // 5. Opcode 0x69 in-session DeviceInfo
-        let session_info = session.dump_device_info().unwrap();
-        assert_eq!(session_info.model.as_deref(), Some("SM-F968B"));
-        assert_eq!(session_info.sales_code.as_deref(), Some("TUR"));
+            // 5. Opcode 0x69 in-session DeviceInfo
+            let session_info = session.dump_device_info().await.unwrap();
+            assert_eq!(session_info.model.as_deref(), Some("SM-F968B"));
+            assert_eq!(session_info.sales_code.as_deref(), Some("TUR"));
 
-        // 6. Dynamic partition check
-        assert!(session.check_super_size(1024 * 1024 * 100).is_ok());
+            // 6. Dynamic partition check
+            assert!(session.check_super_size(1024 * 1024 * 100).await.is_ok());
 
-        // 7. Session close
-        let _ = session.close().unwrap();
+            // 7. Session close
+            let _ = session.close().await.unwrap();
+        });
     }
 
     #[test]
     fn test_gt_i9305_legacy_profile_lifecycle() {
-        let profile = DeviceProfile::gt_i9305();
-        assert_eq!(profile.model, "GT-I9305");
-        assert_eq!(profile.cpu_bl_id, "Mx-MDM");
-        assert_eq!(profile.protocol_version, 2);
-        assert!(!profile.lz4_supported);
-        assert_eq!(profile.usb_product_name.as_deref(), Some("Gadget Serial"));
+        pollster::block_on(async {
+            let profile = DeviceProfile::gt_i9305();
+            assert_eq!(profile.model, "GT-I9305");
+            assert_eq!(profile.cpu_bl_id, "Mx-MDM");
+            assert_eq!(profile.protocol_version, 2);
+            assert!(!profile.lz4_supported);
+            assert_eq!(profile.usb_product_name.as_deref(), Some("Gadget Serial"));
 
-        let backend = Box::new(MockBackend::with_profile(profile, false));
-        let mut connection = OdinConnection::new(backend);
+            let backend = Box::new(MockBackend::with_profile(profile, false));
+            let mut connection = OdinConnection::new(backend);
 
-        // 1. DVIF is NOT supported on legacy S-Boot -> query_device_info returns DeviceInfoUnavailable
-        let err = connection.query_device_info().unwrap_err();
-        assert!(matches!(err, OdinError::DeviceInfoUnavailable));
+            // 1. DVIF is NOT supported on legacy S-Boot -> query_device_info returns DeviceInfoUnavailable
+            let err = connection.query_device_info().await.unwrap_err();
+            assert!(matches!(err, OdinError::DeviceInfoUnavailable));
 
-        // 2. Handshake works with standard ODIN -> LOKE
-        assert!(connection.init().is_ok());
+            // 2. Handshake works with standard ODIN -> LOKE
+            assert!(connection.init().await.is_ok());
 
-        // 3. Begin session -> negotiates protocol v2, LZ4 disabled
-        let mut session = connection.begin_session().unwrap();
-        assert_eq!(session.bootloader_protocol_version(), 2);
-        assert!(!session.is_lz4_supported());
+            // 3. Begin session -> negotiates protocol v2, LZ4 disabled
+            let mut session = connection.begin_session().await.unwrap();
+            assert_eq!(session.bootloader_protocol_version(), 2);
+            assert!(!session.is_lz4_supported());
 
-        // 4. Download PIT (M3_EUR_OPEN_4G.pit is 2924 bytes, 20 entries)
-        let pit_bytes = session.receive_pit_info().unwrap();
-        assert_eq!(pit_bytes.len(), 2924);
-        let pit = PitData::new(&pit_bytes).unwrap();
-        assert_eq!(pit.cpu_bl_id.to_string_lossy(), "Mx-MDM");
-        assert_eq!(pit.entries.len(), 20);
+            // 4. Download PIT (M3_EUR_OPEN_4G.pit is 2924 bytes, 20 entries)
+            let pit_bytes = session.receive_pit_info().await.unwrap();
+            assert_eq!(pit_bytes.len(), 2924);
+            let pit = PitData::new(&pit_bytes).unwrap();
+            assert_eq!(pit.cpu_bl_id.to_string_lossy(), "Mx-MDM");
+            assert_eq!(pit.entries.len(), 20);
 
-        // Verify key partitions from sboot / M3 PIT
-        let modem_entry = pit.find_entry_by_name("RADIO").expect("RADIO entry");
-        assert_eq!(modem_entry.partition_id, 10);
-        assert_eq!(modem_entry.binary_type, BinaryType::ApplicationProcessor);
+            // Verify key partitions from sboot / M3 PIT
+            let modem_entry = pit.find_entry_by_name("RADIO").expect("RADIO entry");
+            assert_eq!(modem_entry.partition_id, 10);
+            assert_eq!(modem_entry.binary_type, BinaryType::ApplicationProcessor);
 
-        // 5. In-session DeviceInfo (0x69) is rejected on legacy bootloader
-        assert!(session.dump_device_info().is_err());
+            // 5. In-session DeviceInfo (0x69) is rejected on legacy bootloader
+            assert!(session.dump_device_info().await.is_err());
 
-        // 6. Dynamic partition check (0x6a) is rejected on legacy bootloader
-        assert!(session.check_super_size(1024).is_err());
+            // 6. Dynamic partition check (0x6a) is rejected on legacy bootloader
+            assert!(session.check_super_size(1024).await.is_err());
 
-        // 7. Close session
-        let _ = session.close().unwrap();
+            // 7. Close session
+            let _ = session.close().await.unwrap();
+        });
     }
 }

@@ -24,30 +24,32 @@ use std::fs::File;
 use std::io::{Read, Write};
 
 pub(crate) fn action_detect(usb_backend: UsbBackendOption, wait: bool, json: bool) -> i32 {
-    let detected = detect_device(usb_backend, wait);
-    if !detected {
-        eprintln!("ERROR: Failed to detect compatible download-mode device.");
-        return 1;
-    }
+    pollster::block_on(async {
+        let detected = detect_device(usb_backend, wait).await;
+        if !detected {
+            eprintln!("ERROR: Failed to detect compatible download-mode device.");
+            return 1;
+        }
 
-    match query_device_info(usb_backend, false) {
-        Ok(info) => {
-            if json {
-                println!("{}", info.to_json());
-            } else {
-                println!("Device detected (Download mode)");
-                print!("{}", info);
+        match query_device_info(usb_backend, false).await {
+            Ok(info) => {
+                if json {
+                    println!("{}", info.to_json());
+                } else {
+                    println!("Device detected (Download mode)");
+                    print!("{}", info);
+                }
+            }
+            Err(_) => {
+                if json {
+                    println!("{{\"modelName\":\"\",\"serialNumber\":\"\"}}");
+                } else {
+                    println!("Device detected (Download mode)");
+                }
             }
         }
-        Err(_) => {
-            if json {
-                println!("{{\"modelName\":\"\",\"serialNumber\":\"\"}}");
-            } else {
-                println!("Device detected (Download mode)");
-            }
-        }
-    }
-    0
+        0
+    })
 }
 
 pub(crate) fn action_dump_pit(
@@ -73,67 +75,69 @@ pub(crate) fn action_dump_pit(
 
     set_progress(CliProgress::new(verbose));
 
-    // Download PIT file from device.
-    let usb = match create_backend(usb_backend, verbose, wait) {
-        Ok(u) => u,
-        Err(e) => {
+    pollster::block_on(async {
+        // Download PIT file from device.
+        let usb = match create_backend(usb_backend, verbose, wait).await {
+            Ok(u) => u,
+            Err(e) => {
+                print_error!("{}", e);
+                return 1;
+            }
+        };
+        let mut connection = OdinConnection::new(usb);
+
+        if let Err(e) = connection.init().await {
             print_error!("{}", e);
             return 1;
         }
-    };
-    let mut connection = OdinConnection::new(usb);
 
-    if let Err(e) = connection.init() {
-        print_error!("{}", e);
-        return 1;
-    }
+        let mut session = match connection.begin_session().await {
+            Ok(s) => s,
+            Err(e) => {
+                print_error!("{}", e);
+                return 1;
+            }
+        };
 
-    let mut session = match connection.begin_session() {
-        Ok(s) => s,
-        Err(e) => {
-            print_error!("{}", e);
-            return 1;
-        }
-    };
+        let mut success = true;
 
-    let mut success = true;
-
-    println!("Downloading device's PIT file");
-    match session.receive_pit_info() {
-        Ok(pit_buffer) => {
-            if let Err(e) = output_file.write_all(&pit_buffer) {
-                print_error!("Failed to write PIT data to output file: {}", e);
+        println!("Downloading device's PIT file");
+        match session.receive_pit_info().await {
+            Ok(pit_buffer) => {
+                if let Err(e) = output_file.write_all(&pit_buffer) {
+                    print_error!("Failed to write PIT data to output file: {}", e);
+                    success = false;
+                }
+            }
+            Err(e) => {
+                print_error!("{}", e);
                 success = false;
             }
         }
-        Err(e) => {
+
+        if let Err(e) = session.end_session().await {
             print_error!("{}", e);
             success = false;
         }
-    }
 
-    if let Err(e) = session.end_session() {
-        print_error!("{}", e);
-        success = false;
-    }
-
-    match reboot_mode {
-        RebootMode::Normal => {
-            if let Err(e) = session.reboot_device() {
-                print_error!("{}", e);
-                success = false;
+        match reboot_mode {
+            RebootMode::Normal => {
+                if let Err(e) = session.reboot_device().await {
+                    print_error!("{}", e);
+                    success = false;
+                }
             }
-        }
-        RebootMode::Download => {
-            if let Err(e) = session.reboot_to_download() {
-                print_error!("{}", e);
-                success = false;
+            RebootMode::Download => {
+                if let Err(e) = session.reboot_to_download().await {
+                    print_error!("{}", e);
+                    success = false;
+                }
             }
+            RebootMode::None => {}
         }
-        RebootMode::None => {}
-    }
 
-    if success { 0 } else { 1 }
+        if success { 0 } else { 1 }
+    })
 }
 
 pub(crate) fn action_print_pit(
@@ -171,85 +175,89 @@ pub(crate) fn action_print_pit(
     } else {
         set_progress(CliProgress::new(verbose));
 
-        let usb = match create_backend(usb_backend, verbose, wait) {
-            Ok(u) => u,
-            Err(e) => {
-                print_error!("{}", e);
-                return 1;
-            }
-        };
-        let mut connection = OdinConnection::new(usb);
-
-        if let Err(e) = connection.init() {
-            print_error!("{}", e);
-            return 1;
-        }
-
-        let mut session = match connection.begin_session() {
-            Ok(s) => s,
-            Err(e) => {
-                print_error!("{}", e);
-                return 1;
-            }
-        };
-
-        let mut success = true;
-        let mut device_pit_data = None;
-
-        println!("Downloading device's PIT file");
-        match session.receive_pit_info() {
-            Ok(device_pit) => match PitData::new(&device_pit) {
-                Ok(pit_data) => {
-                    device_pit_data = Some(pit_data);
+        pollster::block_on(async {
+            let usb = match create_backend(usb_backend, verbose, wait).await {
+                Ok(u) => u,
+                Err(e) => {
+                    print_error!("{}", e);
+                    return 1;
                 }
-                Err(_) => {
-                    print_error!("Failed to unpack device's PIT file!");
+            };
+            let mut connection = OdinConnection::new(usb);
+
+            if let Err(e) = connection.init().await {
+                print_error!("{}", e);
+                return 1;
+            }
+
+            let mut session = match connection.begin_session().await {
+                Ok(s) => s,
+                Err(e) => {
+                    print_error!("{}", e);
+                    return 1;
+                }
+            };
+
+            let mut success = true;
+            let mut device_pit_data = None;
+
+            println!("Downloading device's PIT file");
+            match session.receive_pit_info().await {
+                Ok(device_pit) => match PitData::new(&device_pit) {
+                    Ok(pit_data) => {
+                        device_pit_data = Some(pit_data);
+                    }
+                    Err(_) => {
+                        print_error!("Failed to unpack device's PIT file!");
+                        success = false;
+                    }
+                },
+                Err(e) => {
+                    print_error!("{}", e);
                     success = false;
                 }
-            },
-            Err(e) => {
+            }
+
+            if let Some(pit_data) = device_pit_data {
+                println!("{}", pit_data);
+            }
+
+            if let Err(e) = session.end_session().await {
                 print_error!("{}", e);
                 success = false;
             }
-        }
 
-        if let Some(pit_data) = device_pit_data {
-            println!("{}", pit_data);
-        }
-
-        if let Err(e) = session.end_session() {
-            print_error!("{}", e);
-            success = false;
-        }
-
-        match reboot_mode {
-            RebootMode::Normal => {
-                if let Err(e) = session.reboot_device() {
-                    print_error!("{}", e);
-                    success = false;
+            match reboot_mode {
+                RebootMode::Normal => {
+                    if let Err(e) = session.reboot_device().await {
+                        print_error!("{}", e);
+                        success = false;
+                    }
                 }
-            }
-            RebootMode::Download => {
-                if let Err(e) = session.reboot_to_download() {
-                    print_error!("{}", e);
-                    success = false;
+                RebootMode::Download => {
+                    if let Err(e) = session.reboot_to_download().await {
+                        print_error!("{}", e);
+                        success = false;
+                    }
                 }
+                RebootMode::None => {}
             }
-            RebootMode::None => {}
-        }
 
-        if success { 0 } else { 1 }
+            if success { 0 } else { 1 }
+        })
     }
 }
 
 pub(crate) fn action_reboot_download(usb_backend: UsbBackendOption, _verbose: bool) -> i32 {
-    match samloader_odin::reboot_download(usb_backend) {
-        Ok(()) => 0,
-        Err(e) => {
-            print_error!("{}", e);
-            1
+    pollster::block_on(async {
+        match samloader_odin::reboot_download(usb_backend).await {
+            Ok(()) => 0,
+            Err(e) => {
+                print_error!("{}", e);
+                1
+            }
         }
-    }
+    })
 }
 
 pub(crate) fn action_verify_md5(files: &[String]) -> i32 {

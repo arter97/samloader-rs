@@ -70,10 +70,11 @@ impl RusbBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl UsbBackend for RusbBackend {
     type UsbDevice = ::rusb::Device<Context>;
 
-    fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError> {
+    async fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError> {
         let handle = match device.open() {
             Ok(h) => h,
             Err(e) => return Err(OdinError::DeviceAccess(Box::new(e))),
@@ -171,9 +172,9 @@ impl UsbBackend for RusbBackend {
         })
     }
 
-    fn find_device<F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
+    async fn find_device<'a, F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
-        F: FnMut(u16, u16) -> bool,
+        F: FnMut(u16, u16) -> bool + Send + 'a,
     {
         let context = Context::new().map_err(|e| {
             OdinError::SerialError(format!("Failed to create libusb context: {}", e))
@@ -194,7 +195,7 @@ impl UsbBackend for RusbBackend {
             if wait && !print_wait {
                 println!("Waiting for device...");
                 print_wait = true;
-                std::thread::sleep(Duration::from_secs(1));
+                futures_timer::Delay::new(Duration::from_secs(1)).await;
             } else {
                 break;
             }
@@ -204,8 +205,9 @@ impl UsbBackend for RusbBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl UsbTransfer for RusbBackend {
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         if let Err(e) = self.handle.clear_halt(self.in_endpoint) {
             print_warning!(self.verbose, "Failed to clear IN endpoint halt: {}", e);
         }
@@ -225,12 +227,12 @@ impl UsbTransfer for RusbBackend {
         }
     }
 
-    fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
+    async fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
         let max_attempts = if retry { 6 } else { 1 };
         for attempt in 0..max_attempts {
             if attempt > 0 {
                 print_verbose!(self.verbose, " Retrying...");
-                std::thread::sleep(Duration::from_millis(250 * attempt));
+                futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
             }
 
             let result = self.handle.write_bulk(
@@ -255,13 +257,13 @@ impl UsbTransfer for RusbBackend {
         false
     }
 
-    fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
+    async fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
         let max_attempts = if retry { 6 } else { 1 };
 
         for attempt in 0..max_attempts {
             if attempt > 0 {
                 print_verbose!(self.verbose, " Retrying...");
-                std::thread::sleep(Duration::from_millis(250 * attempt));
+                futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
             }
 
             let result = self.handle.read_bulk(

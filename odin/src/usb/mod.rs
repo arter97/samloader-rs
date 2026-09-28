@@ -19,9 +19,6 @@ compile_error!("At least one USB backend must be enabled!");
 use crate::error::OdinError;
 use std::time::Duration;
 
-#[cfg(feature = "nusb")]
-use ::nusb::MaybeFuture;
-
 #[cfg(feature = "rusb")]
 use ::rusb::{Context, DeviceHandle, UsbContext};
 
@@ -56,16 +53,18 @@ const SUPPORTED_DEVICES: &[(u16, u16)] = &[
     (VID_SAMSUNG, PID_DROID_CHARGE),
 ];
 
+#[cfg(any(feature = "nusb", feature = "rusb"))]
 const USB_CLASS_CDC_DATA: u8 = 0x0A;
 
 /// Trait representing a duplex data transport layer for USB or serial communication.
-pub trait UsbTransfer {
+#[async_trait::async_trait]
+pub trait UsbTransfer: Send {
     /// Resets the transport connection state and buffers.
-    fn reset(&mut self);
+    async fn reset(&mut self);
     /// Sends a buffer of data across the transport with a timeout.
-    fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool;
+    async fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool;
     /// Receives data from the transport into a buffer, returning the number of bytes read.
-    fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32;
+    async fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32;
     /// Returns the USB Product descriptor string if available.
     fn product_name(&self) -> Option<&str> {
         None
@@ -73,20 +72,21 @@ pub trait UsbTransfer {
 }
 
 /// Trait representing a backend factory and device locator for USB or serial transports.
+#[async_trait::async_trait]
 pub trait UsbBackend: Sized + UsbTransfer {
     /// The associated device type identifier.
-    type UsbDevice;
+    type UsbDevice: Send;
 
     /// Instantiates a new backend session wrapper for a given device.
-    fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError>;
+    async fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError>;
     /// Searches for a matching connected device based on a predicate.
-    fn find_device<F>(wait: bool, predicate: F) -> Result<Self::UsbDevice, OdinError>
+    async fn find_device<'a, F>(wait: bool, predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
-        F: FnMut(u16, u16) -> bool;
+        F: FnMut(u16, u16) -> bool + Send + 'a;
 
     /// Searches for a connected device in Download Mode.
-    fn find_download_device(wait: bool) -> Result<Self::UsbDevice, OdinError> {
-        Self::find_device(wait, |vid, pid| SUPPORTED_DEVICES.contains(&(vid, pid)))
+    async fn find_download_device(wait: bool) -> Result<Self::UsbDevice, OdinError> {
+        Self::find_device(wait, |vid, pid| SUPPORTED_DEVICES.contains(&(vid, pid))).await
     }
 }
 
@@ -181,7 +181,7 @@ impl std::fmt::Display for UsbBackendOption {
 }
 
 /// Creates and initializes the requested USB/VCOM communication backend interface.
-pub fn create_backend(
+pub async fn create_backend(
     usb_backend: UsbBackendOption,
     verbose: bool,
     wait: bool,
@@ -189,20 +189,20 @@ pub fn create_backend(
     match usb_backend {
         #[cfg(feature = "serialport")]
         UsbBackendOption::Vcom => {
-            let device = SerialBackend::find_download_device(wait)?;
-            let backend = SerialBackend::new(device, verbose)?;
+            let device = SerialBackend::find_download_device(wait).await?;
+            let backend = SerialBackend::new(device, verbose).await?;
             Ok(Box::new(backend))
         }
         #[cfg(feature = "nusb")]
         UsbBackendOption::Nusb => {
-            let device = NusbBackend::find_download_device(wait)?;
-            let backend = NusbBackend::new(device, verbose)?;
+            let device = NusbBackend::find_download_device(wait).await?;
+            let backend = NusbBackend::new(device, verbose).await?;
             Ok(Box::new(backend))
         }
         #[cfg(feature = "rusb")]
         UsbBackendOption::Libusb => {
-            let device = RusbBackend::find_download_device(wait)?;
-            let backend = RusbBackend::new(device, verbose)?;
+            let device = RusbBackend::find_download_device(wait).await?;
+            let backend = RusbBackend::new(device, verbose).await?;
             Ok(Box::new(backend))
         }
         #[cfg(any(feature = "mock", debug_assertions))]
@@ -214,14 +214,14 @@ pub fn create_backend(
 }
 
 /// Helper function to detect a compatible download-mode device on a given backend.
-pub fn detect_device(usb_backend: UsbBackendOption, wait: bool) -> bool {
+pub async fn detect_device(usb_backend: UsbBackendOption, wait: bool) -> bool {
     match usb_backend {
         #[cfg(feature = "serialport")]
-        UsbBackendOption::Vcom => SerialBackend::find_download_device(wait).is_ok(),
+        UsbBackendOption::Vcom => SerialBackend::find_download_device(wait).await.is_ok(),
         #[cfg(feature = "nusb")]
-        UsbBackendOption::Nusb => NusbBackend::find_download_device(wait).is_ok(),
+        UsbBackendOption::Nusb => NusbBackend::find_download_device(wait).await.is_ok(),
         #[cfg(feature = "rusb")]
-        UsbBackendOption::Libusb => RusbBackend::find_download_device(wait).is_ok(),
+        UsbBackendOption::Libusb => RusbBackend::find_download_device(wait).await.is_ok(),
         #[cfg(any(feature = "mock", debug_assertions))]
         UsbBackendOption::Mock => true,
     }

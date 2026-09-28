@@ -725,7 +725,7 @@ pub async fn reboot_download(usb_backend: crate::usb::UsbBackendOption) -> Resul
         #[cfg(feature = "serialport")]
         crate::usb::UsbBackendOption::Vcom => {
             use crate::usb::{SerialBackend, UsbBackend};
-            let device = SerialBackend::find_device(false, |vid, _| vid == VID_SAMSUNG).await?;
+            let device = SerialBackend::find_device(|vid, _| vid == VID_SAMSUNG).await?;
             Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(
                 SerialBackend::new(device, false).await?,
             ))
@@ -733,13 +733,13 @@ pub async fn reboot_download(usb_backend: crate::usb::UsbBackendOption) -> Resul
         #[cfg(feature = "nusb")]
         crate::usb::UsbBackendOption::Nusb => {
             use crate::usb::{NusbBackend, UsbBackend};
-            let device = NusbBackend::find_device(false, |vid, _| vid == VID_SAMSUNG).await?;
+            let device = NusbBackend::find_device(|vid, _| vid == VID_SAMSUNG).await?;
             Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(NusbBackend::new(device, false).await?))
         }
         #[cfg(feature = "rusb")]
         crate::usb::UsbBackendOption::Libusb => {
             use crate::usb::{RusbBackend, UsbBackend};
-            let device = RusbBackend::find_device(false, |vid, _| vid == VID_SAMSUNG).await?;
+            let device = RusbBackend::find_device(|vid, _| vid == VID_SAMSUNG).await?;
             Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(RusbBackend::new(device, false).await?))
         }
         #[cfg(any(feature = "mock", debug_assertions))]

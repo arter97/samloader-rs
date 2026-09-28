@@ -67,28 +67,17 @@ impl UsbBackend for SerialBackend {
         })
     }
 
-    async fn find_device<'a, F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
+    async fn find_device<'a, F>(mut predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
         F: FnMut(u16, u16) -> bool + MaybeSend + 'a,
     {
-        let mut print_wait = false;
-        loop {
-            if let Ok(ports) = serialport::available_ports() {
-                for port in ports {
-                    if let serialport::SerialPortType::UsbPort(ref info) = port.port_type
-                        && predicate(info.vid, info.pid)
-                    {
-                        return Ok(port);
-                    }
+        if let Ok(ports) = serialport::available_ports() {
+            for port in ports {
+                if let serialport::SerialPortType::UsbPort(ref info) = port.port_type
+                    && predicate(info.vid, info.pid)
+                {
+                    return Ok(port);
                 }
-            }
-
-            if wait && !print_wait {
-                println!("Waiting for device...");
-                print_wait = true;
-                futures_timer::Delay::new(Duration::from_secs(1)).await;
-            } else {
-                break;
             }
         }
 

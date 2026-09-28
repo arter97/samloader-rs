@@ -185,25 +185,15 @@ impl UsbBackend for NusbBackend {
         })
     }
 
-    async fn find_device<'a, F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
+    async fn find_device<'a, F>(mut predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
         F: FnMut(u16, u16) -> bool + MaybeSend + 'a,
     {
-        let mut print_wait = false;
-        loop {
-            if let Ok(devices) = ::nusb::list_devices().await {
-                for device in devices {
-                    if predicate(device.vendor_id(), device.product_id()) {
-                        return Ok(device);
-                    }
+        if let Ok(devices) = ::nusb::list_devices().await {
+            for device in devices {
+                if predicate(device.vendor_id(), device.product_id()) {
+                    return Ok(device);
                 }
-            }
-            if wait && !print_wait {
-                println!("Waiting for device...");
-                print_wait = true;
-                Delay::new(Duration::from_secs(1)).await;
-            } else {
-                break;
             }
         }
         Err(OdinError::DeviceNotFound)

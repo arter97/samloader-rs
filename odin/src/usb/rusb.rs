@@ -172,7 +172,7 @@ impl UsbBackend for RusbBackend {
         })
     }
 
-    async fn find_device<'a, F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
+    async fn find_device<'a, F>(mut predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
         F: FnMut(u16, u16) -> bool + MaybeSend + 'a,
     {
@@ -180,24 +180,13 @@ impl UsbBackend for RusbBackend {
             OdinError::SerialError(format!("Failed to create libusb context: {}", e))
         })?;
 
-        let mut print_wait = false;
-        loop {
-            if let Ok(devices) = context.devices() {
-                for device in devices.iter() {
-                    if let Ok(descriptor) = device.device_descriptor()
-                        && predicate(descriptor.vendor_id(), descriptor.product_id())
-                    {
-                        return Ok(device);
-                    }
+        if let Ok(devices) = context.devices() {
+            for device in devices.iter() {
+                if let Ok(descriptor) = device.device_descriptor()
+                    && predicate(descriptor.vendor_id(), descriptor.product_id())
+                {
+                    return Ok(device);
                 }
-            }
-
-            if wait && !print_wait {
-                println!("Waiting for device...");
-                print_wait = true;
-                futures_timer::Delay::new(Duration::from_secs(1)).await;
-            } else {
-                break;
             }
         }
 

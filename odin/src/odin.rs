@@ -874,7 +874,8 @@ mod tests {
         product: Option<String>,
     }
 
-    #[async_trait::async_trait]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
     impl UsbTransfer for SpyTransfer {
         async fn reset(&mut self) {}
         async fn send_data(&mut self, data: &[u8], _timeout: i32, _retry: bool) -> bool {

@@ -487,7 +487,8 @@ impl MockBackend {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl UsbTransfer for MockBackend {
     async fn reset(&mut self) {
         if self.verbose {

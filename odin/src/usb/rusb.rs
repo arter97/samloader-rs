@@ -174,7 +174,7 @@ impl UsbBackend for RusbBackend {
 
     async fn find_device<'a, F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
-        F: FnMut(u16, u16) -> bool + Send + 'a,
+        F: FnMut(u16, u16) -> bool + MaybeSend + 'a,
     {
         let context = Context::new().map_err(|e| {
             OdinError::SerialError(format!("Failed to create libusb context: {}", e))

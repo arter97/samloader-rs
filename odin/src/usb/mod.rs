@@ -13,7 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(not(any(feature = "rusb", feature = "nusb", feature = "serialport")))]
+#[cfg(not(any(
+    feature = "rusb",
+    feature = "nusb",
+    feature = "serialport",
+    feature = "mock",
+    debug_assertions
+)))]
 compile_error!("At least one USB backend must be enabled!");
 
 use crate::error::OdinError;
@@ -25,6 +31,7 @@ use ::rusb::{Context, DeviceHandle, UsbContext};
 #[cfg(feature = "serialport")]
 use std::io::{Read, Write};
 
+#[allow(unused_macros)]
 macro_rules! print_warning {
     ($verbose:expr, $($arg:tt)*) => {
         if $verbose {
@@ -34,6 +41,7 @@ macro_rules! print_warning {
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! print_verbose {
     ($verbose:expr, $($arg:tt)*) => {
         if $verbose {
@@ -56,9 +64,22 @@ const SUPPORTED_DEVICES: &[(u16, u16)] = &[
 #[cfg(any(feature = "nusb", feature = "rusb"))]
 const USB_CLASS_CDC_DATA: u8 = 0x0A;
 
+/// Helper trait representing `Send` on non-WASM targets and unbounded on WASM.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSend for T {}
+
+/// Helper trait representing `Send` on non-WASM targets and unbounded on WASM.
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSend for T {}
+
 /// Trait representing a duplex data transport layer for USB or serial communication.
-#[async_trait::async_trait]
-pub trait UsbTransfer: Send {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait UsbTransfer: MaybeSend {
     /// Resets the transport connection state and buffers.
     async fn reset(&mut self);
     /// Sends a buffer of data across the transport with a timeout.
@@ -72,17 +93,18 @@ pub trait UsbTransfer: Send {
 }
 
 /// Trait representing a backend factory and device locator for USB or serial transports.
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait UsbBackend: Sized + UsbTransfer {
     /// The associated device type identifier.
-    type UsbDevice: Send;
+    type UsbDevice: MaybeSend;
 
     /// Instantiates a new backend session wrapper for a given device.
     async fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError>;
     /// Searches for a matching connected device based on a predicate.
     async fn find_device<'a, F>(wait: bool, predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
-        F: FnMut(u16, u16) -> bool + Send + 'a;
+        F: FnMut(u16, u16) -> bool + MaybeSend + 'a;
 
     /// Searches for a connected device in Download Mode.
     async fn find_download_device(wait: bool) -> Result<Self::UsbDevice, OdinError> {

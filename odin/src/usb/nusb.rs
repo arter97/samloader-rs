@@ -23,7 +23,9 @@ use futures_timer::Delay;
 
 struct TransferFuture<'a, EpType: BulkOrInterrupt, Dir: EndpointDirection> {
     ep: &'a mut ::nusb::Endpoint<EpType, Dir>,
+    #[cfg(not(target_arch = "wasm32"))]
     delay: Delay,
+    #[cfg(not(target_arch = "wasm32"))]
     cancelled: bool,
 }
 
@@ -34,30 +36,39 @@ impl<'a, EpType: BulkOrInterrupt, Dir: EndpointDirection> Future
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
-        if let Poll::Ready(completion) = this.ep.poll_next_complete(cx) {
-            return Poll::Ready(completion);
-        }
-        if !this.cancelled && Pin::new(&mut this.delay).poll(cx).is_ready() {
-            this.ep.cancel_all();
-            this.cancelled = true;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
             if let Poll::Ready(completion) = this.ep.poll_next_complete(cx) {
                 return Poll::Ready(completion);
             }
+            if !this.cancelled && Pin::new(&mut this.delay).poll(cx).is_ready() {
+                this.ep.cancel_all();
+                this.cancelled = true;
+                if let Poll::Ready(completion) = this.ep.poll_next_complete(cx) {
+                    return Poll::Ready(completion);
+                }
+            }
+            Poll::Pending
         }
-        Poll::Pending
+        #[cfg(target_arch = "wasm32")]
+        {
+            this.ep.poll_next_complete(cx)
+        }
     }
 }
 
 async fn transfer_async<EpType: BulkOrInterrupt, Dir: EndpointDirection>(
     ep: &mut ::nusb::Endpoint<EpType, Dir>,
     buf: Buffer,
-    timeout: Duration,
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] timeout: Duration,
 ) -> Completion {
     assert_eq!(ep.pending(), 0, "a transfer is already pending");
     ep.submit(buf);
     TransferFuture {
         ep,
+        #[cfg(not(target_arch = "wasm32"))]
         delay: Delay::new(timeout),
+        #[cfg(not(target_arch = "wasm32"))]
         cancelled: false,
     }
     .await
@@ -92,7 +103,8 @@ impl NusbBackend {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl UsbBackend for NusbBackend {
     type UsbDevice = ::nusb::DeviceInfo;
 
@@ -175,7 +187,7 @@ impl UsbBackend for NusbBackend {
 
     async fn find_device<'a, F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
-        F: FnMut(u16, u16) -> bool + Send + 'a,
+        F: FnMut(u16, u16) -> bool + MaybeSend + 'a,
     {
         let mut print_wait = false;
         loop {
@@ -198,7 +210,8 @@ impl UsbBackend for NusbBackend {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl UsbTransfer for NusbBackend {
     async fn reset(&mut self) {
         if let Err(e) = self.ep_in.clear_halt().await {
@@ -208,18 +221,22 @@ impl UsbTransfer for NusbBackend {
             print_warning!(self.verbose, "Failed to clear OUT endpoint halt: {}", e);
         }
 
-        let max_packet_size = self.ep_in.max_packet_size();
-        let buf_size = if max_packet_size > 0 {
-            max_packet_size
-        } else {
-            1024
-        };
-        loop {
-            let buf = ::nusb::transfer::Buffer::new(buf_size);
-            let completion = transfer_async(&mut self.ep_in, buf, Duration::from_millis(10)).await;
-            match completion.status {
-                Ok(()) if completion.actual_len > 0 => continue,
-                _ => break,
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let max_packet_size = self.ep_in.max_packet_size();
+            let buf_size = if max_packet_size > 0 {
+                max_packet_size
+            } else {
+                1024
+            };
+            loop {
+                let buf = Buffer::new(buf_size);
+                let completion =
+                    transfer_async(&mut self.ep_in, buf, Duration::from_millis(10)).await;
+                match completion.status {
+                    Ok(()) if completion.actual_len > 0 => continue,
+                    _ => break,
+                }
             }
         }
     }
@@ -230,7 +247,7 @@ impl UsbTransfer for NusbBackend {
             if attempt > 0 {
                 Delay::new(Duration::from_millis(250 * attempt)).await;
             }
-            let buf = ::nusb::transfer::Buffer::from(data.to_vec());
+            let buf = Buffer::from(data.to_vec());
             let completion =
                 transfer_async(&mut self.ep_out, buf, Duration::from_millis(timeout as u64)).await;
             if completion.status.is_ok() {

@@ -69,7 +69,7 @@ impl UsbBackend for SerialBackend {
 
     async fn find_device<'a, F>(wait: bool, mut predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
-        F: FnMut(u16, u16) -> bool + Send + 'a,
+        F: FnMut(u16, u16) -> bool + MaybeSend + 'a,
     {
         let mut print_wait = false;
         loop {

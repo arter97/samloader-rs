@@ -288,3 +288,25 @@ pub async fn detect_device(usb_backend: UsbBackendOption, wait: bool) -> bool {
         .await
         .is_ok()
 }
+
+/// Helper function to prompt user pairing for a compatible download-mode device on WASM.
+#[cfg(target_arch = "wasm32")]
+pub async fn request_device(usb_backend: UsbBackendOption) -> Result<(), OdinError> {
+    match usb_backend {
+        #[cfg(feature = "nusb")]
+        UsbBackendOption::Nusb => {
+            let selectors: Vec<::nusb::DeviceSelector> = SUPPORTED_DEVICES
+                .iter()
+                .map(|&(vid, pid)| ::nusb::DeviceSelector::all().with_vid_pid(vid, pid))
+                .collect();
+
+            ::nusb::request_device(&selectors)
+                .await
+                .map_err(|e| OdinError::DeviceAccess(Box::new(e)))?
+                .ok_or(OdinError::DeviceNotFound)?;
+            Ok(())
+        }
+        #[cfg(any(feature = "mock", debug_assertions))]
+        UsbBackendOption::Mock => Ok(()),
+    }
+}

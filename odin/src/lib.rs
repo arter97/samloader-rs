@@ -42,6 +42,9 @@ pub use usb::{
     MaybeSend, UsbBackend, UsbBackendOption, UsbTransfer, create_backend, detect_device,
 };
 
+#[cfg(target_arch = "wasm32")]
+pub use usb::request_device;
+
 #[cfg(feature = "nusb")]
 pub use usb::NusbBackend;
 

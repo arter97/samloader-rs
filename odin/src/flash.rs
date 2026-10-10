@@ -357,7 +357,7 @@ impl<'a> FlashManager<'a> {
         for (pkg, file) in opened_packages {
             let mut archive = Archive::new(file);
             let entries = archive
-                .entries()
+                .entries_with_seek()
                 .map_err(|e| FlashError::ArchiveReadFailed(pkg.clone(), e))?;
 
             let mut package_entries = Vec::new();

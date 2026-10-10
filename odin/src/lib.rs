@@ -24,6 +24,7 @@ mod lp;
 mod odin;
 mod progress;
 mod protocol;
+mod readahead;
 mod usb;
 
 pub use device_info::{DeviceInfo, SessionDeviceInfo};

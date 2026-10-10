@@ -16,12 +16,14 @@
 
 use crate::FlashError;
 use crate::firmware::{
-    FirmwareFile, FirmwareInfo, FirmwareLz4File, Lz4FrameHeader, verify_md5_footer,
+    FirmwareFile, FirmwareInfo, FirmwareLz4File, FirmwarePayload, Lz4FrameHeader, verify_md5_footer,
 };
 use crate::lp::inspect_super_firmware_info;
 use crate::odin::OdinSession;
 use crate::progress::{self, FlashEvent};
-use memmap2::{Mmap, MmapOptions};
+use crate::readahead;
+#[cfg(test)]
+use memmap2::MmapOptions;
 use samloader_pit::{PitData, PitEntry};
 use std::collections::HashSet;
 use std::fs::File;
@@ -39,16 +41,9 @@ struct IndexedEntry<'a> {
 }
 
 impl<'a> IndexedEntry<'a> {
-    fn map(&self) -> Result<Mmap, FlashError> {
-        // SAFETY: The archive file is opened read-only and is assumed not to be
-        // concurrently modified or truncated during the flashing operation.
-        let mmap = unsafe {
-            MmapOptions::new()
-                .offset(self.offset)
-                .len(self.size as usize)
-                .map(self.file)
-        }
-        .map_err(|e| FlashError::MmapFailed(self.original_name.clone(), e))?;
+    fn map(&self) -> Result<FirmwarePayload, FlashError> {
+        let mmap = FirmwarePayload::map(self.file, self.offset, self.size as usize)
+            .map_err(|e| FlashError::MmapFailed(self.original_name.clone(), e))?;
         Ok(mmap)
     }
 }
@@ -75,7 +70,7 @@ fn find_pit_entry_by_filename<'a>(pit_data: &'a PitData, filename: &str) -> Opti
 }
 
 fn create_firmware_info<'a>(
-    mmap: Mmap,
+    mmap: FirmwarePayload,
     source_size: u64,
     is_lz4_suffix: bool,
     pit_entry: &'a PitEntry,
@@ -83,7 +78,7 @@ fn create_firmware_info<'a>(
     file_display_name: &str,
 ) -> Result<FirmwareInfo<'a>, FlashError> {
     let lz4_frame_header = if is_lz4_suffix {
-        let cursor = std::io::Cursor::new(&mmap);
+        let cursor = std::io::Cursor::new(&mmap[..]);
         match Lz4FrameHeader::parse(cursor) {
             Ok(fh) => Some(fh),
             Err(e) => {
@@ -576,10 +571,7 @@ impl<'a> FlashManager<'a> {
                     let (mmap, file_size) = File::open(&path)
                         .and_then(|f| {
                             let file_size = f.metadata()?.len();
-                            // SAFETY: The partition file is opened read-only and is assumed not to be
-                            // concurrently modified or truncated during the flashing operation.
-                            let mmap =
-                                unsafe { MmapOptions::new().len(file_size as usize).map(&f)? };
+                            let mmap = FirmwarePayload::map(&f, 0, file_size as usize)?;
                             Ok((mmap, file_size))
                         })
                         .map_err(|e| FlashError::MmapFailed(path.clone(), e))?;
@@ -632,34 +624,45 @@ impl<'a> FlashManager<'a> {
                 .map_err(FlashError::SuperSizeCheckFailed)?;
         }
 
-        for info in partition_infos {
-            let name = match &info {
-                FirmwareInfo::Normal(f) => f.pit_entry.partition_name.to_string_lossy(),
-                FirmwareInfo::Lz4(f) => f.pit_entry.partition_name.to_string_lossy(),
-            };
+        let mappings = partition_infos
+            .iter()
+            .map(FirmwareInfo::readahead)
+            .collect();
+        readahead::scope(mappings, |ra| {
+            // Start reading the first payloads before the transfer begins
+            ra.payload(0).advance(0);
 
-            let partition_size = match &info {
-                FirmwareInfo::Normal(f) => f.file.len() as u64,
-                FirmwareInfo::Lz4(f) => f.header.content_size,
-            };
+            for (idx, info) in partition_infos.iter().enumerate() {
+                let name = match info {
+                    FirmwareInfo::Normal(f) => f.pit_entry.partition_name.to_string_lossy(),
+                    FirmwareInfo::Lz4(f) => f.pit_entry.partition_name.to_string_lossy(),
+                };
 
-            progress::on_event(FlashEvent::PartitionStart {
-                name: &name,
-                size: partition_size,
-            });
+                let partition_size = match info {
+                    FirmwareInfo::Normal(f) => f.file.len() as u64,
+                    FirmwareInfo::Lz4(f) => f.header.content_size,
+                };
 
-            let res = match info {
-                FirmwareInfo::Normal(f) => self.session.send_file(&f),
-                FirmwareInfo::Lz4(f) => self.session.send_lz4_file(&f),
-            };
+                progress::on_event(FlashEvent::PartitionStart {
+                    name: &name,
+                    size: partition_size,
+                });
 
-            if let Err(e) = res {
-                progress::on_event(FlashEvent::PartitionFail(&name));
-                return Err(FlashError::Odin(e));
+                let res = match info {
+                    FirmwareInfo::Normal(f) => self.session.send_file(f, Some(ra.payload(idx))),
+                    FirmwareInfo::Lz4(f) => self.session.send_lz4_file(f, Some(ra.payload(idx))),
+                };
+
+                if let Err(e) = res {
+                    progress::on_event(FlashEvent::PartitionFail(&name));
+                    return Err(FlashError::Odin(e));
+                }
+
+                progress::on_event(FlashEvent::PartitionEnd(&name));
             }
 
-            progress::on_event(FlashEvent::PartitionEnd(&name));
-        }
+            Ok(())
+        })?;
 
         self.session.end_session()?;
 
@@ -877,5 +880,99 @@ mod tests {
         let pit_data = manager.download_and_parse_pit().unwrap();
         // M3_EUR_OPEN_4G.pit has Mx-MDM, verifying PIT was sent and updated device state
         assert_eq!(pit_data.cpu_bl_id.to_string_lossy(), "Mx-MDM");
+    }
+
+    fn anon_mapping(data: &[u8]) -> FirmwarePayload {
+        let mut map = MmapOptions::new().len(data.len()).map_anon().unwrap();
+        map.copy_from_slice(data);
+        FirmwarePayload::from_mapping(map.make_read_only().unwrap())
+    }
+
+    fn lz4_mapping(data: &[u8]) -> FirmwarePayload {
+        use lz4_flex::frame::{BlockMode, BlockSize, FrameEncoder, FrameInfo};
+        use std::io::Write;
+
+        let info = FrameInfo::new()
+            .content_size(Some(data.len() as u64))
+            .block_size(BlockSize::Max1MB)
+            .block_mode(BlockMode::Independent);
+        let mut encoder = FrameEncoder::with_frame_info(info, Vec::new());
+        encoder.write_all(data).unwrap();
+        anon_mapping(&encoder.finish().unwrap())
+    }
+
+    fn test_pit_entries() -> Vec<PitEntry> {
+        PitData::new(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-data/M3_EUR_OPEN_4G.pit"
+        )))
+        .unwrap()
+        .entries
+    }
+
+    // Payloads spanning several slices, followed by compressed payloads, so that
+    // readahead crosses slice and partition boundaries on every send path.
+    fn flash_with_readahead(lz4_supported: bool) {
+        let mut profile = crate::usb::DeviceProfile::sm_f968b();
+        profile.lz4_supported = lz4_supported;
+        let backend = Box::new(MockBackend::with_profile(profile, false));
+        let mut connection = OdinConnection::new(backend);
+        connection.init().unwrap();
+        let mut session = connection.begin_session().unwrap();
+        assert_eq!(session.is_lz4_supported(), lz4_supported);
+
+        let raw: Vec<u8> = (0..31 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let entries = test_pit_entries();
+        let lz4 = lz4_mapping(&raw[..3 * 1024 * 1024]);
+        let header = Lz4FrameHeader::parse(std::io::Cursor::new(&lz4[..])).unwrap();
+        let infos = vec![
+            FirmwareInfo::Normal(FirmwareFile {
+                pit_entry: &entries[0],
+                file: anon_mapping(&raw),
+            }),
+            FirmwareInfo::Lz4(FirmwareLz4File {
+                pit_entry: &entries[1],
+                file: lz4,
+                header,
+            }),
+            FirmwareInfo::Normal(FirmwareFile {
+                pit_entry: &entries[2],
+                file: anon_mapping(b"small payload"),
+            }),
+        ];
+
+        let mut manager = FlashManager::new(&mut session);
+        assert!(manager.flash_partitions(infos, RebootMode::None).is_ok());
+    }
+
+    #[test]
+    fn test_flash_partitions_readahead_lz4_direct() {
+        flash_with_readahead(true);
+    }
+
+    #[test]
+    fn test_flash_partitions_readahead_lz4_decompressed() {
+        flash_with_readahead(false);
+    }
+
+    #[test]
+    fn test_flash_partitions_readahead_stops_on_error() {
+        let backend = Box::new(MockBackend::new(false).with_fail_chunk(-1));
+        let mut connection = OdinConnection::new(backend);
+        connection.init().unwrap();
+        let mut session = connection.begin_session().unwrap();
+
+        let raw = vec![0x5Au8; 31 * 1024 * 1024];
+        let entries = test_pit_entries();
+        let infos = vec![FirmwareInfo::Normal(FirmwareFile {
+            pit_entry: &entries[0],
+            file: anon_mapping(&raw),
+        })];
+
+        let mut manager = FlashManager::new(&mut session);
+        assert!(matches!(
+            manager.flash_partitions(infos, RebootMode::None),
+            Err(FlashError::Odin(_))
+        ));
     }
 }

@@ -15,9 +15,55 @@
 use crate::progress::FlashEvent;
 use fast_md5::Md5;
 use lz4_flex::frame::FrameDecoder;
-use memmap2::Mmap;
+use memmap2::{Mmap, MmapOptions};
 use samloader_pit::PitEntry;
+use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::ops::Deref;
+
+/// A mapping plus its backing file, retained for bulk readahead reads.
+pub(crate) struct FirmwarePayload {
+    mapping: Mmap,
+    source: Option<File>,
+    offset: u64,
+}
+
+impl FirmwarePayload {
+    pub(crate) fn map(file: &File, offset: u64, size: usize) -> io::Result<Self> {
+        let source = file.try_clone()?;
+        // SAFETY: Firmware inputs must not be modified or truncated during flashing.
+        let mapping = unsafe { MmapOptions::new().offset(offset).len(size).map(file)? };
+        Ok(Self {
+            mapping,
+            source: Some(source),
+            offset,
+        })
+    }
+
+    pub(crate) fn readahead(&self) -> crate::readahead::Mapping<'_> {
+        crate::readahead::Mapping {
+            data: self,
+            source: self.source.as_ref(),
+            offset: self.offset,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_mapping(mapping: Mmap) -> Self {
+        Self {
+            mapping,
+            source: None,
+            offset: 0,
+        }
+    }
+}
+
+impl Deref for FirmwarePayload {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.mapping
+    }
+}
 
 // This is asserted by Lz4FrameHeader so the header size is always 15
 const LZ4_HEADER_SIZE: usize = 15;
@@ -223,7 +269,7 @@ pub(crate) struct FirmwareFile<'a> {
     /// PIT partition entry associated with this file.
     pub(crate) pit_entry: &'a PitEntry,
     /// Memory-mapped file content payload.
-    pub(crate) file: Mmap,
+    pub(crate) file: FirmwarePayload,
 }
 
 impl<'a> FirmwareFile<'a> {
@@ -237,7 +283,7 @@ pub(crate) struct FirmwareLz4File<'a> {
     /// PIT partition entry associated with this file.
     pub(crate) pit_entry: &'a PitEntry,
     /// Memory-mapped file content payload.
-    pub(crate) file: Mmap,
+    pub(crate) file: FirmwarePayload,
     /// Metadata header of the LZ4 frame.
     pub(crate) header: Lz4FrameHeader,
 }
@@ -259,6 +305,7 @@ impl<'a> FirmwareLz4File<'a> {
     ) -> Lz4DecompressedSliceIterator<'_> {
         Lz4DecompressedSliceIterator {
             decoder: FrameDecoder::new(&self.file[..]),
+            input_len: self.file.len(),
             slice_max_bytes,
         }
     }
@@ -272,8 +319,18 @@ pub(crate) enum FirmwareInfo<'a> {
     Lz4(FirmwareLz4File<'a>),
 }
 
+impl FirmwareInfo<'_> {
+    /// Returns the mapping and backing file range used for readahead.
+    pub(crate) fn readahead(&self) -> crate::readahead::Mapping<'_> {
+        match self {
+            FirmwareInfo::Normal(f) => f.file.readahead(),
+            FirmwareInfo::Lz4(f) => f.file.readahead(),
+        }
+    }
+}
+
 pub(crate) struct Lz4SliceIterator<'a> {
-    file: &'a Mmap,
+    file: &'a [u8],
     max_blocks: usize,
     remaining_decompressed: u64,
     bytes_read: usize,
@@ -337,7 +394,15 @@ impl<'a> Iterator for Lz4SliceIterator<'a> {
 /// Iterator that produces decompressed byte chunks from an LZ4 stream.
 pub(crate) struct Lz4DecompressedSliceIterator<'a> {
     decoder: FrameDecoder<&'a [u8]>,
+    input_len: usize,
     slice_max_bytes: usize,
+}
+
+impl Lz4DecompressedSliceIterator<'_> {
+    /// Returns the number of compressed input bytes consumed by the decoder so far.
+    pub(crate) fn consumed(&self) -> usize {
+        self.input_len - self.decoder.get_ref().len()
+    }
 }
 
 impl<'a> Iterator for Lz4DecompressedSliceIterator<'a> {

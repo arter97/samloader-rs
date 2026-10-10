@@ -17,6 +17,7 @@ use crate::device_info::{DeviceInfo, SessionDeviceInfo};
 use crate::error::{LokeError, OdinError};
 use crate::progress;
 use crate::protocol::{CMD_PIT, Command, DataChunk, Response, STREAMING_CHUNK_ACK};
+use crate::readahead::ReadaheadPayload;
 use crate::usb::UsbTransfer;
 use samloader_pit::PitEntry;
 use std::time::Duration;
@@ -31,7 +32,7 @@ pub struct OdinConnection {
     skip_empty_send: bool,
 }
 
-const MAX_SLICE_SIZE: usize = 30 * 1024 * 1024; // 30 MB (0x1E00000) staging limit in odin4
+pub(crate) const MAX_SLICE_SIZE: usize = 30 * 1024 * 1024; // 30 MB (0x1E00000) staging limit in odin4
 const PACKET_SIZE_DEFAULT: usize = 0x20000; // 128 KB default before negotiation
 const SLICE_TIMEOUT_DEFAULT: u32 = 30000;
 
@@ -502,6 +503,7 @@ impl OdinSession {
         &mut self,
         slices: Iter,
         pit_entry: &PitEntry,
+        mut readahead: Option<ReadaheadPayload>,
     ) -> Result<(), OdinError>
     where
         Bytes: AsRef<[u8]>,
@@ -522,6 +524,9 @@ impl OdinSession {
                 self.bootloader_protocol_version,
             );
 
+            if let Some(ra) = &mut readahead {
+                ra.advance_past(slice_data);
+            }
             self.transmit_slice(&init_cmd, &start_cmd, &end_cmd, slice_data)?;
         }
 
@@ -532,10 +537,11 @@ impl OdinSession {
     pub(crate) fn send_file(
         &mut self,
         info: &crate::firmware::FirmwareFile,
+        readahead: Option<ReadaheadPayload>,
     ) -> Result<(), OdinError> {
         progress::set_length(info.file.len() as u64);
         let slices = info.slices(MAX_SLICE_SIZE);
-        self.transmit_slices(slices, info.pit_entry)
+        self.transmit_slices(slices, info.pit_entry, readahead)
     }
 
     /// Flashes an LZ4-compressed partition firmware file payload to the device,
@@ -543,11 +549,21 @@ impl OdinSession {
     pub(crate) fn send_lz4_file(
         &mut self,
         info: &crate::firmware::FirmwareLz4File,
+        mut readahead: Option<ReadaheadPayload>,
     ) -> Result<(), OdinError> {
         if !self.lz4_supported || info.header.block_max_size != 1024 * 1024 {
             progress::set_length(info.header.content_size);
-            let slices = info.decompressed_slices(MAX_SLICE_SIZE);
-            return self.transmit_slices(slices, info.pit_entry);
+            // Decompressed slices do not point into the mapping, so report the
+            // decoder's input position instead.
+            let mut decompressed = info.decompressed_slices(MAX_SLICE_SIZE);
+            let slices = std::iter::from_fn(move || {
+                let slice = decompressed.next()?;
+                if let Some(ra) = &mut readahead {
+                    ra.advance(decompressed.consumed());
+                }
+                Some(slice)
+            });
+            return self.transmit_slices(slices, info.pit_entry, None);
         }
 
         progress::set_length(info.file.len() as u64);
@@ -571,6 +587,9 @@ impl OdinSession {
                 self.bootloader_protocol_version,
             );
 
+            if let Some(ra) = &mut readahead {
+                ra.advance_past(slice_data);
+            }
             self.transmit_slice(&init_cmd, &start_cmd, &end_cmd, slice_data)?;
         }
 
@@ -756,7 +775,7 @@ mod tests {
         let seq2 = vec![0xBBu8; 0x20000];
         let slices = vec![seq1, seq2].into_iter();
 
-        assert!(session.transmit_slices(slices, &pit_entry).is_ok());
+        assert!(session.transmit_slices(slices, &pit_entry, None).is_ok());
 
         assert!(session.close().is_ok());
     }

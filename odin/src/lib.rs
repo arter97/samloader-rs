@@ -16,6 +16,7 @@
 
 #![deny(missing_docs)]
 
+mod avb;
 mod device_info;
 mod error;
 mod firmware;

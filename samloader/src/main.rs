@@ -119,7 +119,8 @@ const FLASH_HELP: &str = r#"Flashes one or more firmware files to your phone. Pa
 
 Example explicit flashing: samloader flash -p RECOVERY recovery.img
 Example auto-matching: samloader flash -f boot.img
-Example skipping partitions: samloader flash -a AP.tar.md5 --skip BOOT,vbmeta.img"#;
+Example skipping partitions: samloader flash -a AP.tar.md5 --skip BOOT,vbmeta.img
+Example disabling AVB: samloader flash -b BL.tar.md5 --disable-verity --disable-verification"#;
 
 const NO_REBOOT_HELP: &str = "Disables automatic reboot after flashing";
 const ERASE_HELP: &str = "Perform low-level NAND hardware erase on USERDATA before flashing";
@@ -135,6 +136,8 @@ const PARTITION_HELP: &str = "Explicit partition name/ID and file to flash";
 const FILE_HELP: &str = "Automatic partition name matching file to flash";
 const SKIP_HELP: &str = "Comma-separated file or partition names to skip. Partition names \
                          also skip their _A and _B slots";
+const DISABLE_VERITY_HELP: &str = "Sets disable-verity when flashing vbmeta";
+const DISABLE_VERIFICATION_HELP: &str = "Sets disable-verification when flashing vbmeta";
 
 // --- Verify MD5 Command (`verify-md5`) ---
 const VERIFY_MD5_ABOUT: &str = "Verifies the MD5 checksum of one or more .tar.md5 files";
@@ -404,6 +407,18 @@ fn main() {
                         .help(SKIP_HELP),
                 )
                 .arg(
+                    Arg::new("disable-verity")
+                        .long("disable-verity")
+                        .action(ArgAction::SetTrue)
+                        .help(DISABLE_VERITY_HELP),
+                )
+                .arg(
+                    Arg::new("disable-verification")
+                        .long("disable-verification")
+                        .action(ArgAction::SetTrue)
+                        .help(DISABLE_VERIFICATION_HELP),
+                )
+                .arg(
                     Arg::new("csc_code")
                         .long("csc-code")
                         .num_args(1)
@@ -618,6 +633,8 @@ fn main() {
                 &packages,
                 &partitions,
                 &skip,
+                sub_matches.get_flag("disable-verity"),
+                sub_matches.get_flag("disable-verification"),
                 csc_code,
                 erase,
             );

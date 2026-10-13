@@ -48,13 +48,15 @@ impl FirmwarePayload {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_mapping(mapping: Mmap) -> Self {
-        Self {
-            mapping,
+    /// Copies `data` into an anonymous mapping with no backing file.
+    pub(crate) fn from_bytes(data: &[u8]) -> io::Result<Self> {
+        let mut mapping = MmapOptions::new().len(data.len()).map_anon()?;
+        mapping.copy_from_slice(data);
+        Ok(Self {
+            mapping: mapping.make_read_only()?,
             source: None,
             offset: 0,
-        }
+        })
     }
 }
 
@@ -319,7 +321,37 @@ pub(crate) enum FirmwareInfo<'a> {
     Lz4(FirmwareLz4File<'a>),
 }
 
-impl FirmwareInfo<'_> {
+impl<'a> FirmwareInfo<'a> {
+    /// Returns the PIT partition entry associated with this payload.
+    pub(crate) fn pit_entry(&self) -> &'a PitEntry {
+        match self {
+            FirmwareInfo::Normal(f) => f.pit_entry,
+            FirmwareInfo::Lz4(f) => f.pit_entry,
+        }
+    }
+
+    /// Returns the payload content, decompressing it if needed.
+    pub(crate) fn to_vec(&self) -> io::Result<Vec<u8>> {
+        match self {
+            FirmwareInfo::Normal(f) => Ok(f.file.to_vec()),
+            FirmwareInfo::Lz4(f) => {
+                let mut data = Vec::new();
+                FrameDecoder::new(&f.file[..]).read_to_end(&mut data)?;
+                if data.len() as u64 != f.header.content_size {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "LZ4 content size mismatch: expected {}, got {}",
+                            f.header.content_size,
+                            data.len()
+                        ),
+                    ));
+                }
+                Ok(data)
+            }
+        }
+    }
+
     /// Returns the mapping and backing file range used for readahead.
     pub(crate) fn readahead(&self) -> crate::readahead::Mapping<'_> {
         match self {

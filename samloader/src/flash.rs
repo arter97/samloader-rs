@@ -132,6 +132,8 @@ pub(crate) fn action_flash(
     packages: &[String],
     partitions: &[PartitionArg],
     skip: &[String],
+    disable_verity: bool,
+    disable_verification: bool,
     csc_code: Option<&str>,
     erase: bool,
 ) -> i32 {
@@ -172,6 +174,8 @@ pub(crate) fn action_flash(
         .packages(packages)
         .partitions(&mapped_partitions)
         .skip(skip)
+        .disable_verity(disable_verity)
+        .disable_verification(disable_verification)
         .sales_code(csc_code);
 
     if let Some(pit_path) = pit {

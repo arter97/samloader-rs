@@ -14,6 +14,7 @@
 
 use crate::progress::FlashEvent;
 use fast_md5::Md5;
+use futures::StreamExt;
 use futures::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
 use futures::stream::{self, Stream};
 use samloader_pit::PitEntry;
@@ -306,6 +307,50 @@ pub(crate) enum FirmwareInfo<'a, R> {
     Normal(FirmwareFile<'a, R>),
     /// LZ4-compressed firmware file payload.
     Lz4(FirmwareLz4File<'a, R>),
+}
+
+impl<'a, R> FirmwareInfo<'a, R> {
+    /// Returns the PIT partition entry associated with this payload.
+    pub(crate) fn pit_entry(&self) -> &'a PitEntry {
+        match self {
+            FirmwareInfo::Normal(f) => f.pit_entry,
+            FirmwareInfo::Lz4(f) => f.pit_entry,
+        }
+    }
+}
+
+impl<'a, R: AsyncRead + AsyncSeek + Unpin> FirmwareInfo<'a, R> {
+    /// Reads the entire payload content, decompressing it if needed.
+    pub(crate) async fn read_all(&mut self) -> io::Result<Vec<u8>> {
+        match self {
+            FirmwareInfo::Normal(f) => {
+                f.file.seek(SeekFrom::Start(0)).await?;
+                let mut data = vec![0u8; f.size as usize];
+                f.file.read_exact(&mut data).await?;
+                Ok(data)
+            }
+            FirmwareInfo::Lz4(f) => {
+                let mut data = Vec::new();
+                let content_size = f.header.content_size;
+                let slice_size = (f.header.block_max_size as usize).max(64 * 1024);
+                let mut slices = std::pin::pin!(f.decompressed_slices(slice_size));
+                while let Some(slice) = slices.next().await {
+                    data.extend_from_slice(&slice?);
+                }
+                if data.len() as u64 != content_size {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "LZ4 content size mismatch: expected {}, got {}",
+                            content_size,
+                            data.len()
+                        ),
+                    ));
+                }
+                Ok(data)
+            }
+        }
+    }
 }
 
 struct Lz4SliceIterator<'r, R> {

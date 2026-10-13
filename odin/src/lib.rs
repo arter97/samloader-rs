@@ -22,6 +22,7 @@ compile_error!("Feature 'rusb' is not supported when building for WebAssembly!")
 #[cfg(all(target_arch = "wasm32", feature = "serialport"))]
 compile_error!("Feature 'serialport' is not supported when building for WebAssembly!");
 
+mod avb;
 mod device_info;
 mod error;
 mod firmware;

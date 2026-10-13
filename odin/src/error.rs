@@ -269,6 +269,10 @@ pub enum FlashError {
     #[error("Skip target \"{0}\" does not match any file or partition in the specified PIT.")]
     SkipTargetNotFound(String),
 
+    /// Failed to set the requested AVB flags in a vbmeta image.
+    #[error("Failed to rewrite vbmeta of {0}: {1}")]
+    VbmetaRewriteFailed(String, #[source] std::io::Error),
+
     /// The file payload is larger than the partition size defined in PIT.
     #[error("{0} partition is too small for given file. Use --skip-size-check to flash anyways.")]
     PartitionTooSmall(String),

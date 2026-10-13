@@ -15,6 +15,7 @@
 // limitations under the License.
 
 use crate::FlashError;
+use crate::avb;
 use crate::firmware::{
     FirmwareFile, FirmwareInfo, FirmwareLz4File, Lz4FrameHeader, verify_md5_footer,
 };
@@ -54,6 +55,12 @@ impl<'a> IndexedEntry<'a> {
     }
 }
 
+fn anon_mmap(data: &[u8]) -> std::io::Result<Mmap> {
+    let mut mapping = MmapOptions::new().len(data.len()).map_anon()?;
+    mapping.copy_from_slice(data);
+    mapping.make_read_only()
+}
+
 fn normalize_basename(path_str: &str) -> (String, bool) {
     let mut filename = Path::new(path_str)
         .file_name()
@@ -81,6 +88,21 @@ fn is_super_entry(entry: &PitEntry) -> bool {
             .flash_filename
             .to_string_lossy()
             .eq_ignore_ascii_case("super.img")
+}
+
+// Mirrors fastboot, where partitions with a prefix (e.g. guest_vbmeta_a) also count
+fn is_vbmeta_entry(entry: &PitEntry) -> bool {
+    let name = entry.partition_name.to_string_lossy().to_ascii_uppercase();
+    ["VBMETA", "VBMETA_A", "VBMETA_B"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+}
+
+fn is_boot_entry(entry: &PitEntry) -> bool {
+    let name = entry.partition_name.to_string_lossy();
+    ["BOOT", "BOOT_A", "BOOT_B"]
+        .iter()
+        .any(|boot| name.eq_ignore_ascii_case(boot))
 }
 
 // A skip target matches either the flash filename or the partition name of a PIT
@@ -180,6 +202,7 @@ pub struct FlashManager<'a> {
     sales_code: Option<&'a str>,
     erase: bool,
     skip: Vec<String>,
+    vbmeta_flags: u32,
 }
 
 impl<'a> FlashManager<'a> {
@@ -199,6 +222,7 @@ impl<'a> FlashManager<'a> {
             sales_code: None,
             erase: false,
             skip: Vec::new(),
+            vbmeta_flags: 0,
         }
     }
 
@@ -281,6 +305,31 @@ impl<'a> FlashManager<'a> {
         self
     }
 
+    /// Sets whether to disable dm-verity in the flashed vbmeta images, like fastboot's
+    /// `--disable-verity`. Every partition named `VBMETA`, `VBMETA_A` or `VBMETA_B`
+    /// (optionally with a prefix) is rewritten, and LZ4 compressed images are sent
+    /// decompressed. Devices without a vbmeta partition have `BOOT` rewritten instead.
+    pub fn disable_verity(mut self, enabled: bool) -> Self {
+        self.set_vbmeta_flag(avb::AVB_VBMETA_IMAGE_FLAGS_HASHTREE_DISABLED, enabled);
+        self
+    }
+
+    /// Sets whether to disable AVB verification in the flashed vbmeta images, like
+    /// fastboot's `--disable-verification`. The same images as with
+    /// [`disable_verity`](Self::disable_verity) are rewritten.
+    pub fn disable_verification(mut self, enabled: bool) -> Self {
+        self.set_vbmeta_flag(avb::AVB_VBMETA_IMAGE_FLAGS_VERIFICATION_DISABLED, enabled);
+        self
+    }
+
+    fn set_vbmeta_flag(&mut self, flag: u32, enabled: bool) {
+        if enabled {
+            self.vbmeta_flags |= flag;
+        } else {
+            self.vbmeta_flags &= !flag;
+        }
+    }
+
     /// Executes the flashing pipeline sequence.
     pub async fn execute(&mut self) -> Result<(), FlashError> {
         // Step 0: Set device sales code if configured
@@ -342,6 +391,10 @@ impl<'a> FlashManager<'a> {
             )
             .await?;
 
+        // Step 6: Rewrite vbmeta flags if requested
+        self.rewrite_vbmeta_payloads(&pit_data, &mut partition_infos)
+            .await?;
+
         // Auto-detect super_used_size if not specified in TAR metadata
         if self.super_used_size.is_none()
             && let Some(super_info) = partition_infos.iter_mut().find(|info| {
@@ -355,7 +408,7 @@ impl<'a> FlashManager<'a> {
             self.super_used_size = inspect_super_firmware_info(super_info).await;
         }
 
-        // Step 6: Flash payloads to the device
+        // Step 7: Flash payloads to the device
         self.flash_partitions(partition_infos, self.reboot_mode)
             .await?;
 
@@ -689,7 +742,64 @@ impl<'a> FlashManager<'a> {
         Ok(unique_partition_infos)
     }
 
-    // Helper 6: Flash deduplicated partition payloads to the device
+    // Helper 6: Set the requested AVB flags in vbmeta payloads. Like fastboot, the
+    // top-level vbmeta is looked up in boot on devices without a vbmeta partition.
+    async fn rewrite_vbmeta_payloads(
+        &self,
+        pit_data: &PitData,
+        partition_infos: &mut [FirmwareInfo<'_, Cursor<Mmap>>],
+    ) -> Result<(), FlashError> {
+        if self.vbmeta_flags == 0 {
+            return Ok(());
+        }
+
+        let has_vbmeta_partition = pit_data.entries.iter().any(is_vbmeta_entry);
+        let mut rewritten = false;
+        for info in partition_infos.iter_mut() {
+            let pit_entry = info.pit_entry();
+            let in_footer = if is_vbmeta_entry(pit_entry) {
+                false
+            } else if !has_vbmeta_partition && is_boot_entry(pit_entry) {
+                true
+            } else {
+                continue;
+            };
+
+            let name = pit_entry.partition_name.to_string_lossy();
+            let rewrite_err = |e| FlashError::VbmetaRewriteFailed(name.to_string(), e);
+
+            // The patched image is sent uncompressed, bypassing LZ4 passthrough
+            let mut data = info.read_all().await.map_err(rewrite_err)?;
+            let Some(offset) = avb::rewrite_vbmeta(&mut data, self.vbmeta_flags, in_footer)
+                .map_err(rewrite_err)?
+            else {
+                continue;
+            };
+
+            progress::println(&format!(
+                "Rewriting {} vbmeta struct at offset: {}",
+                name, offset
+            ));
+            let size = data.len() as u64;
+            let mmap = anon_mmap(&data).map_err(rewrite_err)?;
+            *info = FirmwareInfo::Normal(FirmwareFile {
+                pit_entry,
+                file: Cursor::new(mmap),
+                size,
+            });
+            rewritten = true;
+        }
+
+        if !rewritten {
+            progress::println(
+                "Warning: no vbmeta image is being flashed, AVB flags left unchanged",
+            );
+        }
+
+        Ok(())
+    }
+
+    // Helper 7: Flash deduplicated partition payloads to the device
     async fn flash_partitions<R: AsyncRead + AsyncSeek + Unpin>(
         &mut self,
         partition_infos: Vec<FirmwareInfo<'_, R>>,
@@ -1142,6 +1252,239 @@ mod tests {
 
         assert!(matches!(run(&[]), Err(FlashError::SuperSizeCheckFailed(_))));
         assert!(run(&["super.img"]).is_ok());
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+    fn anon_mapping(data: &[u8]) -> Cursor<Mmap> {
+        Cursor::new(anon_mmap(data).unwrap())
+    }
+
+    fn lz4_mapping(data: &[u8]) -> (Cursor<Mmap>, u64, Lz4FrameHeader) {
+        use lz4_flex::frame::{BlockMode, BlockSize, FrameEncoder, FrameInfo};
+        use std::io::Write;
+
+        let info = FrameInfo::new()
+            .content_size(Some(data.len() as u64))
+            .block_size(BlockSize::Max1MB)
+            .block_mode(BlockMode::Independent);
+        let mut encoder = FrameEncoder::with_frame_info(info, Vec::new());
+        encoder.write_all(data).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let size = compressed.len() as u64;
+        let header =
+            pollster::block_on(Lz4FrameHeader::parse(Cursor::new(&compressed[..]))).unwrap();
+        (anon_mapping(&compressed), size, header)
+    }
+
+    fn find_entry<'p>(pit_data: &'p PitData, name: &str) -> &'p PitEntry {
+        pit_data.find_entry_by_name(name).unwrap()
+    }
+
+    fn rewrite_vbmeta(
+        pit_data: &PitData,
+        infos: &mut [FirmwareInfo<'_, Cursor<Mmap>>],
+        verity: bool,
+        verification: bool,
+    ) -> Result<(), FlashError> {
+        pollster::block_on(async {
+            let backend = Box::new(MockBackend::new());
+            let mut connection = OdinConnection::new(backend);
+            connection.init().await.unwrap();
+            let mut session = connection.begin_session().await.unwrap();
+
+            FlashManager::new(&mut session)
+                .disable_verity(verity)
+                .disable_verification(verification)
+                .rewrite_vbmeta_payloads(pit_data, infos)
+                .await
+        })
+    }
+
+    fn normal_bytes(info: &FirmwareInfo<'_, Cursor<Mmap>>) -> Vec<u8> {
+        match info {
+            FirmwareInfo::Normal(f) => f.file.get_ref().to_vec(),
+            FirmwareInfo::Lz4(_) => panic!("expected an uncompressed payload"),
+        }
+    }
+
+    #[test]
+    fn test_rewrite_vbmeta_payloads_patches_all_vbmeta() {
+        use crate::avb::tests::{vbmeta_flags, vbmeta_image};
+
+        let pit_data = ab_pit_data();
+        let image = vbmeta_image(0);
+        let size = image.len() as u64;
+        let (lz4, lz4_size, header) = lz4_mapping(&image);
+        let mut infos = vec![
+            FirmwareInfo::Normal(FirmwareFile {
+                pit_entry: find_entry(&pit_data, "VBMETA_A"),
+                file: anon_mapping(&image),
+                size,
+            }),
+            FirmwareInfo::Lz4(FirmwareLz4File {
+                pit_entry: find_entry(&pit_data, "VBMETA_B"),
+                file: lz4,
+                size: lz4_size,
+                header,
+            }),
+            FirmwareInfo::Normal(FirmwareFile {
+                pit_entry: find_entry(&pit_data, "VBMETA_SYSTEM_A"),
+                file: anon_mapping(&image),
+                size,
+            }),
+            FirmwareInfo::Normal(FirmwareFile {
+                pit_entry: find_entry(&pit_data, "BOOT_A"),
+                file: anon_mapping(&image),
+                size,
+            }),
+        ];
+
+        rewrite_vbmeta(&pit_data, &mut infos, true, false).unwrap();
+        assert_eq!(vbmeta_flags(&normal_bytes(&infos[0]), 0), 0x1);
+        assert_eq!(vbmeta_flags(&normal_bytes(&infos[1]), 0), 0x1);
+
+        // Rewriting again accumulates flags, and LZ4 passthrough stays disabled
+        rewrite_vbmeta(&pit_data, &mut infos, false, true).unwrap();
+        for info in &infos[..2] {
+            let data = normal_bytes(info);
+            assert_eq!(data.len(), image.len());
+            assert_eq!(vbmeta_flags(&data, 0), 0x3);
+        }
+
+        // Like fastboot, only top-level vbmeta partitions are rewritten
+        assert_eq!(normal_bytes(&infos[2]), image);
+        assert_eq!(normal_bytes(&infos[3]), image);
+    }
+
+    #[test]
+    fn test_rewrite_vbmeta_payloads_disabled_keeps_payloads() {
+        let pit_data = ab_pit_data();
+        let (lz4, size, header) = lz4_mapping(&crate::avb::tests::vbmeta_image(0));
+        let mut infos = vec![FirmwareInfo::Lz4(FirmwareLz4File {
+            pit_entry: find_entry(&pit_data, "VBMETA_A"),
+            file: lz4,
+            size,
+            header,
+        })];
+
+        rewrite_vbmeta(&pit_data, &mut infos, false, false).unwrap();
+        assert!(matches!(infos[0], FirmwareInfo::Lz4(_)));
+    }
+
+    #[test]
+    fn test_rewrite_vbmeta_payloads_invalid_vbmeta_fails() {
+        let pit_data = ab_pit_data();
+        let mut infos = vec![FirmwareInfo::Normal(FirmwareFile {
+            pit_entry: find_entry(&pit_data, "VBMETA_A"),
+            file: anon_mapping(&[0u8; 4096]),
+            size: 4096,
+        })];
+
+        assert!(matches!(
+            rewrite_vbmeta(&pit_data, &mut infos, true, true),
+            Err(FlashError::VbmetaRewriteFailed(name, _)) if name == "VBMETA_A"
+        ));
+    }
+
+    #[test]
+    fn test_rewrite_vbmeta_payloads_boot_without_vbmeta_partition() {
+        use crate::avb::tests::vbmeta_flags;
+
+        // M3_EUR_OPEN_4G.pit has no vbmeta partition, so the vbmeta in boot's footer
+        // is rewritten. A boot image without an AVB footer is rejected.
+        let pit_data = PitData::new(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-data/M3_EUR_OPEN_4G.pit"
+        )))
+        .unwrap();
+
+        let mut boot = vec![0u8; 16 * 1024];
+        boot[0x1000..0x1004].copy_from_slice(b"AVB0");
+        let footer = boot.len() - 64;
+        boot[footer..footer + 4].copy_from_slice(b"AVBf");
+        boot[footer + 20..footer + 28].copy_from_slice(&0x1000u64.to_be_bytes());
+
+        let mut infos = vec![FirmwareInfo::Normal(FirmwareFile {
+            pit_entry: find_entry(&pit_data, "BOOT"),
+            file: anon_mapping(&boot),
+            size: boot.len() as u64,
+        })];
+        rewrite_vbmeta(&pit_data, &mut infos, true, true).unwrap();
+        assert_eq!(vbmeta_flags(&normal_bytes(&infos[0]), 0x1000), 0x3);
+
+        let mut infos = vec![FirmwareInfo::Normal(FirmwareFile {
+            pit_entry: find_entry(&pit_data, "BOOT"),
+            file: anon_mapping(&[0u8; 4096]),
+            size: 4096,
+        })];
+        assert!(matches!(
+            rewrite_vbmeta(&pit_data, &mut infos, true, false),
+            Err(FlashError::VbmetaRewriteFailed(_, _))
+        ));
+    }
+
+    #[test]
+    fn test_execute_disable_verity_with_lz4_vbmeta() {
+        use std::io::Write;
+
+        let temp_dir = std::env::temp_dir().join("samloader_test_disable_verity");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let write_package = |name: &str, vbmeta: &[u8]| {
+            let mut encoder = lz4_flex::frame::FrameEncoder::with_frame_info(
+                lz4_flex::frame::FrameInfo::new()
+                    .content_size(Some(vbmeta.len() as u64))
+                    .block_size(lz4_flex::frame::BlockSize::Max1MB)
+                    .block_mode(lz4_flex::frame::BlockMode::Independent),
+                Vec::new(),
+            );
+            encoder.write_all(vbmeta).unwrap();
+            let vbmeta_lz4 = encoder.finish().unwrap();
+
+            let tar_path = temp_dir.join(name);
+            let mut builder = tar::Builder::new(File::create(&tar_path).unwrap());
+            let files: [(&str, &[u8]); 2] = [
+                ("vbmeta.img.lz4", &vbmeta_lz4),
+                ("boot.img", b"DUMMY BOOT IMAGE DATA"),
+            ];
+            for (path, content) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(content.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append_data(&mut header, path, content).unwrap();
+            }
+            builder.finish().unwrap();
+            tar_path
+        };
+        let valid = write_package("valid.tar", &crate::avb::tests::vbmeta_image(0));
+        let invalid = write_package("invalid.tar", &[0u8; 4096]);
+
+        let run = |tar_path: &Path, verity: bool| {
+            pollster::block_on(async {
+                let backend = Box::new(MockBackend::with_profile(
+                    crate::usb::DeviceProfile::sm_f968b(),
+                ));
+                let mut connection = OdinConnection::new(backend);
+                connection.init().await.unwrap();
+                let mut session = connection.begin_session().await.unwrap();
+                assert!(session.is_lz4_supported());
+                FlashManager::new(&mut session)
+                    .packages(&[tar_path.to_string_lossy()])
+                    .disable_verity(verity)
+                    .execute()
+                    .await
+            })
+        };
+
+        assert!(run(&valid, false).is_ok());
+        assert!(run(&valid, true).is_ok());
+        // The vbmeta in the package is only parsed when a rewrite is requested
+        assert!(run(&invalid, false).is_ok());
+        assert!(matches!(
+            run(&invalid, true),
+            Err(FlashError::VbmetaRewriteFailed(name, _)) if name == "VBMETA_A"
+        ));
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

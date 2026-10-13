@@ -261,6 +261,10 @@ pub enum FlashError {
     #[error("Partition ID {0} does not exist in the specified PIT.")]
     PartitionIdNotFound(u32),
 
+    /// The skip target does not match any file or partition in the active PIT table.
+    #[error("Skip target \"{0}\" does not match any file or partition in the specified PIT.")]
+    SkipTargetNotFound(String),
+
     /// The file payload is larger than the partition size defined in PIT.
     #[error("{0} partition is too small for given file. Use --skip-size-check to flash anyways.")]
     PartitionTooSmall(String),

@@ -69,6 +69,32 @@ fn find_pit_entry_by_filename<'a>(pit_data: &'a PitData, filename: &str) -> Opti
     })
 }
 
+fn is_super_entry(entry: &PitEntry) -> bool {
+    entry.partition_name == "SUPER"
+        || entry
+            .flash_filename
+            .to_string_lossy()
+            .eq_ignore_ascii_case("super.img")
+}
+
+// A skip target matches either the flash filename or the partition name of a PIT
+// entry. Partition names also match their _A and _B slots on A/B devices.
+fn is_skip_target(entry: &PitEntry, target: &str) -> bool {
+    let (filename, _) = normalize_basename(target);
+    if entry
+        .flash_filename
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&filename)
+    {
+        return true;
+    }
+
+    let name = entry.partition_name.to_string_lossy();
+    ["", "_A", "_B"]
+        .iter()
+        .any(|slot| name.eq_ignore_ascii_case(&format!("{}{}", target, slot)))
+}
+
 fn create_firmware_info<'a>(
     mmap: FirmwarePayload,
     source_size: u64,
@@ -146,6 +172,7 @@ pub struct FlashManager<'a> {
     has_download_list: bool,
     sales_code: Option<&'a str>,
     erase: bool,
+    skip: Vec<String>,
 }
 
 impl<'a> FlashManager<'a> {
@@ -164,6 +191,7 @@ impl<'a> FlashManager<'a> {
             has_download_list: false,
             sales_code: None,
             erase: false,
+            skip: Vec::new(),
         }
     }
 
@@ -234,6 +262,18 @@ impl<'a> FlashManager<'a> {
         self
     }
 
+    /// Sets the partitions to exclude from flashing. Each target is either a file name
+    /// or a partition name in the PIT. Partition names also exclude their `_A` and `_B`
+    /// slots.
+    pub fn skip(mut self, targets: &[impl AsRef<str>]) -> Self {
+        self.skip = targets
+            .iter()
+            .map(|t| t.as_ref().trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        self
+    }
+
     /// Executes the flashing pipeline sequence.
     pub fn execute(&mut self) -> Result<(), FlashError> {
         // Step 0: Set device sales code if configured
@@ -272,11 +312,24 @@ impl<'a> FlashManager<'a> {
         // Step 3: Flash PIT if available and download active PIT data from the device
         let pit_data = self.download_and_parse_pit()?;
 
-        // Step 4: Map entries and individual files to FirmwareInfo payloads
+        // Step 4: Resolve the partitions excluded from flashing
+        let skipped_ids = self.resolve_skipped_partitions(&pit_data)?;
+
+        // The super size check is meaningless when super is not flashed
+        if pit_data
+            .entries
+            .iter()
+            .any(|e| skipped_ids.contains(&e.partition_id) && is_super_entry(e))
+        {
+            self.super_used_size = None;
+        }
+
+        // Step 5: Map entries and individual files to FirmwareInfo payloads
         let partition_infos = self.build_partition_infos(
             &pit_data,
             resolved_entries,
             &self.partitions,
+            &skipped_ids,
             self.skip_size_check,
         )?;
 
@@ -287,17 +340,13 @@ impl<'a> FlashManager<'a> {
                     FirmwareInfo::Normal(f) => f.pit_entry,
                     FirmwareInfo::Lz4(f) => f.pit_entry,
                 };
-                entry.partition_name == "SUPER"
-                    || entry
-                        .flash_filename
-                        .to_string_lossy()
-                        .eq_ignore_ascii_case("super.img")
+                is_super_entry(entry)
             })
         {
             self.super_used_size = inspect_super_firmware_info(super_info);
         }
 
-        // Step 5: Flash payloads to the device
+        // Step 6: Flash payloads to the device
         self.flash_partitions(partition_infos, self.reboot_mode)?;
 
         Ok(())
@@ -478,12 +527,31 @@ impl<'a> FlashManager<'a> {
         Ok(pit_data)
     }
 
-    // Helper 4: Map package entries and individual files into FirmwareInfo
+    // Helper 4: Resolve skip targets into the IDs of the PIT entries they match
+    fn resolve_skipped_partitions(&self, pit_data: &PitData) -> Result<HashSet<u32>, FlashError> {
+        let mut skipped_ids = HashSet::new();
+        for target in &self.skip {
+            let mut matched = false;
+            for entry in &pit_data.entries {
+                if is_skip_target(entry, target) {
+                    skipped_ids.insert(entry.partition_id);
+                    matched = true;
+                }
+            }
+            if !matched {
+                return Err(FlashError::SkipTargetNotFound(target.clone()));
+            }
+        }
+        Ok(skipped_ids)
+    }
+
+    // Helper 5: Map package entries and individual files into FirmwareInfo
     fn build_partition_infos<'c>(
         &self,
         pit_data: &'c PitData,
         resolved_entries: Vec<IndexedEntry<'_>>,
         partitions: &[(Option<String>, String)],
+        skipped_ids: &HashSet<u32>,
         skip_size_check: bool,
     ) -> Result<Vec<FirmwareInfo<'c>>, FlashError> {
         enum PartitionSource<'p> {
@@ -559,7 +627,20 @@ impl<'a> FlashManager<'a> {
         }
         unique_planned.reverse();
 
-        // 4. Lazily map and build FirmwareInfo only for unique planned partitions
+        // 4. Drop partitions excluded with skip targets
+        unique_planned.retain(|planned| {
+            if skipped_ids.contains(&planned.pit_entry.partition_id) {
+                progress::println(&format!(
+                    "Skipping {} (excluded with --skip)",
+                    planned.pit_entry.partition_name.to_string_lossy()
+                ));
+                false
+            } else {
+                true
+            }
+        });
+
+        // 5. Lazily map and build FirmwareInfo only for unique planned partitions
         let mut unique_partition_infos = Vec::with_capacity(unique_planned.len());
         for planned in unique_planned {
             let (mmap, file_size, is_lz4, display_name) = match planned.source {
@@ -593,7 +674,7 @@ impl<'a> FlashManager<'a> {
         Ok(unique_partition_infos)
     }
 
-    // Helper 5: Flash deduplicated partition payloads to the device
+    // Helper 6: Flash deduplicated partition payloads to the device
     fn flash_partitions(
         &mut self,
         partition_infos: Vec<FirmwareInfo<'_>>,
@@ -953,6 +1034,151 @@ mod tests {
     #[test]
     fn test_flash_partitions_readahead_lz4_decompressed() {
         flash_with_readahead(false);
+    }
+
+    fn ab_pit_data() -> PitData {
+        PitData::new(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-data/Q7MQ_EUR_OPENX.pit"
+        )))
+        .unwrap()
+    }
+
+    fn skipped_names(targets: &[&str]) -> Result<Vec<String>, FlashError> {
+        let pit_data = ab_pit_data();
+        let backend = Box::new(MockBackend::new(false));
+        let mut connection = OdinConnection::new(backend);
+        connection.init().unwrap();
+        let mut session = connection.begin_session().unwrap();
+
+        let manager = FlashManager::new(&mut session).skip(targets);
+        let skipped_ids = manager.resolve_skipped_partitions(&pit_data)?;
+        let mut names: Vec<String> = pit_data
+            .entries
+            .iter()
+            .filter(|e| skipped_ids.contains(&e.partition_id))
+            .map(|e| e.partition_name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    #[test]
+    fn test_skip_partition_name_covers_ab_slots() {
+        assert_eq!(skipped_names(&["BOOT"]).unwrap(), ["BOOT_A", "BOOT_B"]);
+        assert_eq!(
+            skipped_names(&["vbmeta"]).unwrap(),
+            ["VBMETA_A", "VBMETA_B"]
+        );
+        assert_eq!(skipped_names(&["boot_b"]).unwrap(), ["BOOT_B"]);
+        assert_eq!(skipped_names(&["SUPER"]).unwrap(), ["SUPER"]);
+    }
+
+    #[test]
+    fn test_skip_file_name_covers_all_matching_partitions() {
+        assert_eq!(skipped_names(&["boot.img"]).unwrap(), ["BOOT_A", "BOOT_B"]);
+        assert_eq!(
+            skipped_names(&["AP/vbmeta.img.lz4"]).unwrap(),
+            ["VBMETA_A", "VBMETA_B"]
+        );
+        assert_eq!(
+            skipped_names(&["init_boot.img", "DTBO", " "]).unwrap(),
+            ["DTBO_A", "DTBO_B", "INIT_BOOT_A", "INIT_BOOT_B"]
+        );
+    }
+
+    #[test]
+    fn test_skip_unknown_target_fails() {
+        assert!(matches!(
+            skipped_names(&["BOOT", "nonexistent.img"]),
+            Err(FlashError::SkipTargetNotFound(t)) if t == "nonexistent.img"
+        ));
+    }
+
+    #[test]
+    fn test_build_partition_infos_drops_skipped_partitions() {
+        let temp_dir = std::env::temp_dir().join("samloader_test_skip_build");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let mut partitions = Vec::new();
+        for name in ["boot.img", "vbmeta.img", "dtbo.img"] {
+            let path = temp_dir.join(name);
+            std::fs::write(&path, b"DUMMY IMAGE DATA").unwrap();
+            partitions.push((None, path.to_string_lossy().into_owned()));
+        }
+        partitions.push((
+            Some("VBMETA_B".to_string()),
+            temp_dir.join("vbmeta.img").to_string_lossy().into_owned(),
+        ));
+
+        let pit_data = ab_pit_data();
+        let backend = Box::new(MockBackend::new(false));
+        let mut connection = OdinConnection::new(backend);
+        connection.init().unwrap();
+        let mut session = connection.begin_session().unwrap();
+
+        let manager = FlashManager::new(&mut session).skip(&["boot.img", "VBMETA"]);
+        let skipped_ids = manager.resolve_skipped_partitions(&pit_data).unwrap();
+        let infos = manager
+            .build_partition_infos(&pit_data, Vec::new(), &partitions, &skipped_ids, false)
+            .unwrap();
+
+        let names: Vec<String> = infos
+            .iter()
+            .map(|info| match info {
+                FirmwareInfo::Normal(f) => f.pit_entry.partition_name.to_string_lossy(),
+                FirmwareInfo::Lz4(f) => f.pit_entry.partition_name.to_string_lossy(),
+            })
+            .map(|n| n.into_owned())
+            .collect();
+        assert_eq!(names, ["DTBO_A"]);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_execute_skipping_super_skips_super_size_check() {
+        let temp_dir = std::env::temp_dir().join("samloader_test_skip_super");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let tar_path = temp_dir.join("AP.tar");
+
+        {
+            let tar_file = File::create(&tar_path).unwrap();
+            let mut builder = tar::Builder::new(tar_file);
+            let files: [(&str, &[u8]); 4] = [
+                ("meta-data/super_used_size.txt", b"27276104\n"),
+                ("meta-data/download-list.txt", b"boot.img\nsuper.img\n"),
+                ("boot.img", b"DUMMY BOOT IMAGE DATA"),
+                ("super.img", b"DUMMY SUPER IMAGE DATA"),
+            ];
+            for (path, content) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(content.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append_data(&mut header, path, content).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+
+        let run = |skip: &[&str]| {
+            let backend = Box::new(
+                MockBackend::with_profile(crate::usb::DeviceProfile::sm_f968b(), false)
+                    .with_protocol_version(3)
+                    .with_fail_check_super_size(-1),
+            );
+            let mut connection = OdinConnection::new(backend);
+            connection.init().unwrap();
+            let mut session = connection.begin_session().unwrap();
+            FlashManager::new(&mut session)
+                .packages(&[tar_path.to_string_lossy()])
+                .skip(skip)
+                .execute()
+        };
+
+        assert!(matches!(run(&[]), Err(FlashError::SuperSizeCheckFailed(_))));
+        assert!(run(&["super.img"]).is_ok());
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]

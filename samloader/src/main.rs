@@ -138,6 +138,7 @@ const SKIP_HELP: &str = "Comma-separated file or partition names to skip. Partit
                          also skip their _A and _B slots";
 const DISABLE_VERITY_HELP: &str = "Sets disable-verity when flashing vbmeta";
 const DISABLE_VERIFICATION_HELP: &str = "Sets disable-verification when flashing vbmeta";
+const FLASH_FORCE_HELP: &str = "Flash userdata without asking for confirmation";
 
 // --- Verify MD5 Command (`verify-md5`) ---
 const VERIFY_MD5_ABOUT: &str = "Verifies the MD5 checksum of one or more .tar.md5 files";
@@ -419,6 +420,12 @@ fn main() {
                         .help(DISABLE_VERIFICATION_HELP),
                 )
                 .arg(
+                    Arg::new("force")
+                        .long("force")
+                        .action(ArgAction::SetTrue)
+                        .help(FLASH_FORCE_HELP),
+                )
+                .arg(
                     Arg::new("csc_code")
                         .long("csc-code")
                         .num_args(1)
@@ -637,6 +644,7 @@ fn main() {
                 sub_matches.get_flag("disable-verification"),
                 csc_code,
                 erase,
+                sub_matches.get_flag("force"),
             );
             std::process::exit(result);
         }

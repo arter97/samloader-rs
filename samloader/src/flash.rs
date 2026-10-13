@@ -21,6 +21,10 @@ use samloader_odin::{
     FlashEvent, FlashManager, FlashProgress, OdinConnection, RebootMode, UsbBackendOption,
     create_backend, set_progress,
 };
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{self, BufRead, Read, Write};
+use std::path::Path;
 use std::time::Duration;
 
 const PROGRESS_TEMPLATE: &str =
@@ -120,6 +124,90 @@ impl FlashProgress for CliProgress {
     }
 }
 
+// Strips any directory and .lz4 suffix, like the partition matching done when flashing
+fn normalize_basename(path: &str) -> String {
+    let name = Path::new(path)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match name.len().checked_sub(4) {
+        Some(stem) if name[stem..].eq_ignore_ascii_case(".lz4") => name[..stem].to_string(),
+        _ => name,
+    }
+}
+
+// Lists the file names that will be flashed from packages, honoring download-list.txt
+fn package_flash_names(packages: &[String]) -> io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    let mut download_list: Option<HashSet<String>> = None;
+    for pkg in packages {
+        let mut archive = tar::Archive::new(File::open(pkg)?);
+        for entry in archive.entries_with_seek()? {
+            let mut entry = entry?;
+            let name = normalize_basename(&entry.path()?.to_string_lossy());
+            if name == "download-list.txt" {
+                let mut content = String::new();
+                entry.read_to_string(&mut content)?;
+                download_list = Some(content.lines().map(|s| s.trim().to_string()).collect());
+            } else {
+                names.push(name);
+            }
+        }
+    }
+    if let Some(list) = download_list {
+        names.retain(|name| list.contains(name));
+    }
+    Ok(names)
+}
+
+// Checks whether userdata is flashed before talking to the device, so without its PIT.
+// Packages and auto-matched files are checked by file name, and explicit partitions by
+// partition name. Partitions given by numeric ID cannot be resolved and are not checked.
+fn flashes_userdata(
+    packages: &[String],
+    partitions: &[PartitionArg],
+    skip: &[String],
+) -> io::Result<bool> {
+    let is_skipped = |name: &str| {
+        skip.iter().any(|target| {
+            let target = target.trim();
+            target.eq_ignore_ascii_case("USERDATA")
+                || normalize_basename(target).eq_ignore_ascii_case(name)
+        })
+    };
+
+    let mut names = package_flash_names(packages)?;
+    for part in partitions {
+        names.push(match &part.name {
+            Some(name) => name.clone(),
+            None => normalize_basename(&part.filename),
+        });
+    }
+    Ok(names
+        .iter()
+        .any(|name| name.to_ascii_lowercase().starts_with("userdata") && !is_skipped(name)))
+}
+
+// Asks a y/n question on the terminal, declining when stdin is closed
+fn confirm(question: &str) -> bool {
+    let mut stdin = io::stdin().lock();
+    loop {
+        print!("{} [y/n] ", question);
+        let _ = io::stdout().flush();
+
+        let mut answer = String::new();
+        if stdin.read_line(&mut answer).unwrap_or(0) == 0 {
+            println!();
+            return false;
+        }
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return true,
+            "n" | "no" => return false,
+            _ => {}
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn action_flash(
     usb_backend: UsbBackendOption,
@@ -136,7 +224,26 @@ pub(crate) fn action_flash(
     disable_verification: bool,
     csc_code: Option<&str>,
     erase: bool,
+    force: bool,
 ) -> i32 {
+    if !force {
+        match flashes_userdata(packages, partitions, skip) {
+            Ok(false) => {}
+            Ok(true) => {
+                if !confirm(
+                    "Flash list contains userdata. This will wipe the device's data. Continue?",
+                ) {
+                    print_error!("Flashing aborted by user.");
+                    return 1;
+                }
+            }
+            Err(e) => {
+                print_error!("Failed to read packages: {}", e);
+                return 1;
+            }
+        }
+    }
+
     set_progress(CliProgress::new(verbose));
 
     pollster::block_on(async {

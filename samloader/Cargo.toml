@@ -14,6 +14,7 @@ samloader-pit = { workspace = true }
 samloader-odin = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
+tar = { workspace = true }
 cfg-if = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -118,7 +118,8 @@ const FLASH_HELP: &str = r#"Flashes one or more firmware files to your phone. Pa
 (or IDs) can be obtained by executing the print-pit action.
 
 Example explicit flashing: samloader flash -p RECOVERY recovery.img
-Example auto-matching: samloader flash -f boot.img"#;
+Example auto-matching: samloader flash -f boot.img
+Example skipping partitions: samloader flash -a AP.tar.md5 --skip BOOT,vbmeta.img"#;
 
 const NO_REBOOT_HELP: &str = "Disables automatic reboot after flashing";
 const ERASE_HELP: &str = "Perform low-level NAND hardware erase on USERDATA before flashing";
@@ -132,6 +133,8 @@ const CSC_HELP: &str = "CSC/HOME_CSC tar package file";
 const USERDATA_HELP: &str = "USERDATA tar package file";
 const PARTITION_HELP: &str = "Explicit partition name/ID and file to flash";
 const FILE_HELP: &str = "Automatic partition name matching file to flash";
+const SKIP_HELP: &str = "Comma-separated file or partition names to skip. Partition names \
+                         also skip their _A and _B slots";
 
 // --- Verify MD5 Command (`verify-md5`) ---
 const VERIFY_MD5_ABOUT: &str = "Verifies the MD5 checksum of one or more .tar.md5 files";
@@ -393,6 +396,14 @@ fn main() {
                         .help(FILE_HELP),
                 )
                 .arg(
+                    Arg::new("skip")
+                        .long("skip")
+                        .action(ArgAction::Append)
+                        .value_delimiter(',')
+                        .value_name("NAMES")
+                        .help(SKIP_HELP),
+                )
+                .arg(
                     Arg::new("csc_code")
                         .long("csc-code")
                         .num_args(1)
@@ -591,6 +602,11 @@ fn main() {
                 std::process::exit(1);
             }
 
+            let skip: Vec<String> = sub_matches
+                .get_many::<String>("skip")
+                .map(|v| v.cloned().collect())
+                .unwrap_or_default();
+
             let result = flash::action_flash(
                 usb_backend,
                 verbose,
@@ -601,6 +617,7 @@ fn main() {
                 pit,
                 &packages,
                 &partitions,
+                &skip,
                 csc_code,
                 erase,
             );

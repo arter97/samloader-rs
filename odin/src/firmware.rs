@@ -14,9 +14,9 @@
 
 use crate::progress::FlashEvent;
 use fast_md5::Md5;
-use lz4_flex::frame::FrameDecoder;
 use memmap2::Mmap;
 use samloader_pit::PitEntry;
+use std::borrow::Cow;
 use std::io::{self, Read, Seek, SeekFrom};
 
 // This is asserted by Lz4FrameHeader so the header size is always 15
@@ -258,8 +258,11 @@ impl<'a> FirmwareLz4File<'a> {
         slice_max_bytes: usize,
     ) -> Lz4DecompressedSliceIterator<'_> {
         Lz4DecompressedSliceIterator {
-            decoder: FrameDecoder::new(&self.file[..]),
+            data: &self.file[LZ4_HEADER_SIZE..],
+            block_max_size: self.header.block_max_size as usize,
             slice_max_bytes,
+            leftover: Vec::new(),
+            finished: false,
         }
     }
 }
@@ -273,7 +276,7 @@ pub(crate) enum FirmwareInfo<'a> {
 }
 
 pub(crate) struct Lz4SliceIterator<'a> {
-    file: &'a Mmap,
+    file: &'a [u8],
     max_blocks: usize,
     remaining_decompressed: u64,
     bytes_read: usize,
@@ -336,31 +339,76 @@ impl<'a> Iterator for Lz4SliceIterator<'a> {
 
 /// Iterator that produces decompressed byte chunks from an LZ4 stream.
 pub(crate) struct Lz4DecompressedSliceIterator<'a> {
-    decoder: FrameDecoder<&'a [u8]>,
+    data: &'a [u8],
+    block_max_size: usize,
     slice_max_bytes: usize,
+    leftover: Vec<u8>,
+    finished: bool,
 }
 
 impl<'a> Iterator for Lz4DecompressedSliceIterator<'a> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut buffer = vec![0u8; self.slice_max_bytes];
-        let mut total_read = 0;
-
-        while total_read < self.slice_max_bytes {
-            match self.decoder.read(&mut buffer[total_read..]) {
-                Ok(0) => break,
-                Ok(n) => total_read += n,
-                Err(_) => break,
-            }
-        }
-
-        if total_read == 0 {
+        if self.finished && self.leftover.is_empty() {
             return None;
         }
 
-        buffer.truncate(total_read);
-        Some(buffer)
+        let mut buffer = Vec::with_capacity(self.slice_max_bytes);
+
+        // Drain any leftover decompressed bytes from a previous block
+        let take = self.slice_max_bytes.min(self.leftover.len());
+        buffer.extend(self.leftover.drain(..take));
+
+        while buffer.len() < self.slice_max_bytes && !self.finished {
+            let Some((size_bytes, rest)) = self.data.split_first_chunk::<4>() else {
+                self.finished = true;
+                break;
+            };
+            self.data = rest;
+
+            let block_size = u32::from_le_bytes(*size_bytes);
+            if block_size == 0 {
+                // EndMark reached
+                self.finished = true;
+                break;
+            }
+
+            let is_uncompressed = (block_size & 0x8000_0000) != 0;
+            let data_size = (block_size & 0x7FFF_FFFF) as usize;
+            let Some((block_data, rest)) = self.data.split_at_checked(data_size) else {
+                self.finished = true;
+                break;
+            };
+            self.data = rest;
+
+            let decomp = if is_uncompressed {
+                Cow::Borrowed(block_data)
+            } else {
+                match lz4_flex::block::decompress(block_data, self.block_max_size) {
+                    Ok(decomp) => Cow::Owned(decomp),
+                    Err(_) => {
+                        self.finished = true;
+                        break;
+                    }
+                }
+            };
+
+            let needed = self.slice_max_bytes - buffer.len();
+            if decomp.len() <= needed {
+                buffer.extend_from_slice(&decomp);
+            } else {
+                buffer.extend_from_slice(&decomp[..needed]);
+                self.leftover.extend_from_slice(&decomp[needed..]);
+                break;
+            }
+        }
+
+        if buffer.is_empty() {
+            None
+        } else {
+            Some(buffer)
+        }
     }
 }
 

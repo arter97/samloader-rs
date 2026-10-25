@@ -16,8 +16,6 @@
 //! and sparse image containers to derive dynamic partition sizing.
 
 use crate::firmware::FirmwareInfo;
-use lz4_flex::frame::FrameDecoder;
-use std::io::Read;
 
 const SPARSE_HEADER_MAGIC: u32 = 0xed26_ff3a;
 const CHUNK_RAW: u16 = 0xcac1;
@@ -38,16 +36,7 @@ pub(crate) fn inspect_super_firmware_info(info: &FirmwareInfo<'_>) -> Option<u32
     match info {
         FirmwareInfo::Normal(f) => inspect_super_bytes(&f.file),
         FirmwareInfo::Lz4(f) => {
-            let mut decoder = FrameDecoder::new(&f.file[..]);
-            let mut decompressed = Vec::with_capacity(DECOMPRESS_PREFIX_LIMIT);
-            let mut buf = [0u8; 64 * 1024];
-            while decompressed.len() < DECOMPRESS_PREFIX_LIMIT {
-                match decoder.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => decompressed.extend_from_slice(&buf[..n]),
-                    Err(_) => break,
-                }
-            }
+            let decompressed = f.decompressed_slices(DECOMPRESS_PREFIX_LIMIT).next()?;
             inspect_super_bytes(&decompressed)
         }
     }

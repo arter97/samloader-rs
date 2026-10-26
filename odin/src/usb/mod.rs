@@ -33,20 +33,15 @@ use std::io::{Read, Write};
 
 #[allow(unused_macros)]
 macro_rules! print_warning {
-    ($verbose:expr, $($arg:tt)*) => {
-        if $verbose {
-            eprint!("WARNING: ");
-            eprintln!($($arg)*);
-        }
+    ($($arg:tt)*) => {
+        crate::progress::println_verbose(&format!("WARNING: {}", format_args!($($arg)*)));
     };
 }
 
 #[allow(unused_macros)]
 macro_rules! print_verbose {
-    ($verbose:expr, $($arg:tt)*) => {
-        if $verbose {
-            eprintln!($($arg)*);
-        }
+    ($($arg:tt)*) => {
+        crate::progress::println_verbose(&format!($($arg)*));
     };
 }
 
@@ -100,7 +95,7 @@ pub trait UsbBackend: Sized + UsbTransfer {
     type UsbDevice: MaybeSend;
 
     /// Instantiates a new backend session wrapper for a given device.
-    async fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError>;
+    async fn new(device: Self::UsbDevice) -> Result<Self, OdinError>;
     /// Searches for a matching connected device based on a predicate.
     async fn find_device<'a, F>(predicate: F) -> Result<Self::UsbDevice, OdinError>
     where
@@ -217,29 +212,29 @@ impl UsbBackendOption {
         }
     }
 
-    async fn create_transfer(self, verbose: bool) -> Result<Box<dyn UsbTransfer>, OdinError> {
+    async fn create_transfer(self) -> Result<Box<dyn UsbTransfer>, OdinError> {
         match self {
             #[cfg(feature = "serialport")]
             UsbBackendOption::Vcom => {
                 let device = SerialBackend::find_download_device().await?;
-                let backend = SerialBackend::new(device, verbose).await?;
+                let backend = SerialBackend::new(device).await?;
                 Ok(Box::new(backend))
             }
             #[cfg(feature = "nusb")]
             UsbBackendOption::Nusb => {
                 let device = NusbBackend::find_download_device().await?;
-                let backend = NusbBackend::new(device, verbose).await?;
+                let backend = NusbBackend::new(device).await?;
                 Ok(Box::new(backend))
             }
             #[cfg(feature = "rusb")]
             UsbBackendOption::Libusb => {
                 let device = RusbBackend::find_download_device().await?;
-                let backend = RusbBackend::new(device, verbose).await?;
+                let backend = RusbBackend::new(device).await?;
                 Ok(Box::new(backend))
             }
             #[cfg(any(feature = "mock", debug_assertions))]
             UsbBackendOption::Mock => {
-                let backend = MockBackend::new(verbose);
+                let backend = MockBackend::new();
                 Ok(Box::new(backend))
             }
         }
@@ -263,7 +258,7 @@ where
             Ok(val) => return Ok(val),
             Err(OdinError::DeviceNotFound) if wait => {
                 if !print_wait {
-                    println!("Waiting for device...");
+                    crate::progress::println("Waiting for device...");
                     print_wait = true;
                 }
                 futures_timer::Delay::new(Duration::from_secs(1)).await;
@@ -276,10 +271,9 @@ where
 /// Creates and initializes the requested USB/VCOM communication backend interface.
 pub async fn create_backend(
     usb_backend: UsbBackendOption,
-    verbose: bool,
     wait: bool,
 ) -> Result<Box<dyn UsbTransfer>, OdinError> {
-    poll_device(wait, || usb_backend.create_transfer(verbose)).await
+    poll_device(wait, || usb_backend.create_transfer()).await
 }
 
 /// Helper function to detect a compatible download-mode device on a given backend.

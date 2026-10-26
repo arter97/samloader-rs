@@ -17,7 +17,6 @@ use super::*;
 
 /// USB communication backend using `libusb` / `rusb`.
 pub struct RusbBackend {
-    verbose: bool,
     handle: DeviceHandle<Context>,
     product: Option<String>,
 
@@ -33,23 +32,23 @@ impl RusbBackend {
                 && !languages.is_empty()
             {
                 if let Ok(manufacturer) = handle.read_manufacturer_string_ascii(&descriptor) {
-                    eprintln!("      Manufacturer: \"{}\"", manufacturer);
+                    print_verbose!("      Manufacturer: \"{}\"", manufacturer);
                 }
                 if let Ok(product) = handle.read_product_string_ascii(&descriptor) {
-                    eprintln!("           Product: \"{}\"", product);
+                    print_verbose!("           Product: \"{}\"", product);
                 }
                 if let Ok(serial) = handle.read_serial_number_string_ascii(&descriptor) {
-                    eprintln!("         Serial No: \"{}\"", serial);
+                    print_verbose!("         Serial No: \"{}\"", serial);
                 }
             }
 
-            eprintln!("\n            length: {}", descriptor.length());
-            eprintln!("      device class: {}", descriptor.class_code());
-            eprintln!(
+            print_verbose!("\n            length: {}", descriptor.length());
+            print_verbose!("      device class: {}", descriptor.class_code());
+            print_verbose!(
                 "               S/N: {}",
                 descriptor.serial_number_string_index().unwrap_or(0)
             );
-            eprintln!(
+            print_verbose!(
                 "           VID:PID: {:04X}:{:04X}",
                 descriptor.vendor_id(),
                 descriptor.product_id()
@@ -57,15 +56,15 @@ impl RusbBackend {
 
             let version = descriptor.device_version();
             let bcd = (version.0 as u16) << 8 | (version.1 as u16) << 4 | (version.2 as u16);
-            eprintln!("         bcdDevice: {:04X}", bcd);
+            print_verbose!("         bcdDevice: {:04X}", bcd);
 
-            eprintln!(
+            print_verbose!(
                 "   iMan:iProd:iSer: {}:{}:{}",
                 descriptor.manufacturer_string_index().unwrap_or(0),
                 descriptor.product_string_index().unwrap_or(0),
                 descriptor.serial_number_string_index().unwrap_or(0)
             );
-            eprintln!("          nb confs: {}", descriptor.num_configurations());
+            print_verbose!("          nb confs: {}", descriptor.num_configurations());
         }
     }
 }
@@ -74,7 +73,7 @@ impl RusbBackend {
 impl UsbBackend for RusbBackend {
     type UsbDevice = ::rusb::Device<Context>;
 
-    async fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError> {
+    async fn new(device: Self::UsbDevice) -> Result<Self, OdinError> {
         let handle = match device.open() {
             Ok(h) => h,
             Err(e) => return Err(OdinError::DeviceAccess(Box::new(e))),
@@ -88,9 +87,7 @@ impl UsbBackend for RusbBackend {
             let _ = handle.set_active_configuration(1);
         }
 
-        if verbose {
-            Self::print_device_info(&device, &handle);
-        }
+        Self::print_device_info(&device, &handle);
 
         let product = device
             .device_descriptor()
@@ -137,13 +134,13 @@ impl UsbBackend for RusbBackend {
             return Err(OdinError::InterfaceConfigurationNotFound);
         }
 
-        print_verbose!(verbose, "Claiming interface...");
+        print_verbose!("Claiming interface...");
         if handle.claim_interface(interface_index as u8).is_err() {
             #[cfg(target_os = "linux")]
             {
-                print_verbose!(verbose, "Attempt failed. Detaching driver...");
+                print_verbose!("Attempt failed. Detaching driver...");
                 let _ = handle.detach_kernel_driver(interface_index as u8);
-                print_verbose!(verbose, "Claiming interface again...");
+                print_verbose!("Claiming interface again...");
                 if handle.claim_interface(interface_index as u8).is_err() {
                     return Err(OdinError::InterfaceClaimFailed);
                 }
@@ -155,14 +152,13 @@ impl UsbBackend for RusbBackend {
         }
 
         if alt_setting_index != 0 {
-            print_verbose!(verbose, "Setting up interface...");
+            print_verbose!("Setting up interface...");
             handle
                 .set_alternate_setting(interface_index as u8, alt_setting_index as u8)
                 .map_err(|_| OdinError::InterfaceSetupFailed)?;
         }
 
         Ok(Self {
-            verbose,
             handle,
             product,
 
@@ -198,10 +194,10 @@ impl UsbBackend for RusbBackend {
 impl UsbTransfer for RusbBackend {
     async fn reset(&mut self) {
         if let Err(e) = self.handle.clear_halt(self.in_endpoint) {
-            print_warning!(self.verbose, "Failed to clear IN endpoint halt: {}", e);
+            print_warning!("Failed to clear IN endpoint halt: {}", e);
         }
         if let Err(e) = self.handle.clear_halt(self.out_endpoint) {
-            print_warning!(self.verbose, "Failed to clear OUT endpoint halt: {}", e);
+            print_warning!("Failed to clear OUT endpoint halt: {}", e);
         }
 
         let mut buf = [0u8; 1024];
@@ -220,7 +216,7 @@ impl UsbTransfer for RusbBackend {
         let max_attempts = if retry { 6 } else { 1 };
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                print_verbose!(self.verbose, " Retrying...");
+                print_verbose!(" Retrying...");
                 futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
             }
 
@@ -236,7 +232,6 @@ impl UsbTransfer for RusbBackend {
 
             if retry {
                 print_warning!(
-                    self.verbose,
                     "libusb error {} whilst sending bulk transfer.",
                     result.as_ref().unwrap_err()
                 );
@@ -251,7 +246,7 @@ impl UsbTransfer for RusbBackend {
 
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                print_verbose!(self.verbose, " Retrying...");
+                print_verbose!(" Retrying...");
                 futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
             }
 
@@ -267,7 +262,6 @@ impl UsbTransfer for RusbBackend {
 
             if retry {
                 print_warning!(
-                    self.verbose,
                     "libusb error {} whilst receiving bulk transfer.",
                     result.as_ref().unwrap_err()
                 );
@@ -283,7 +277,7 @@ impl UsbTransfer for RusbBackend {
 
 impl Drop for RusbBackend {
     fn drop(&mut self) {
-        print_verbose!(self.verbose, "Releasing device interface...");
+        print_verbose!("Releasing device interface...");
         let _ = self.handle.release_interface(self.interface_index as u8);
 
         #[cfg(target_os = "linux")]

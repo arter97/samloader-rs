@@ -24,6 +24,9 @@ use std::fs::File;
 use std::io::{Read, Write};
 
 pub(crate) fn action_detect(usb_backend: UsbBackendOption, wait: bool, json: bool) -> i32 {
+    if !json {
+        set_progress(CliProgress::new(false));
+    }
     pollster::block_on(async {
         let detected = detect_device(usb_backend, wait).await;
         if !detected {
@@ -77,7 +80,7 @@ pub(crate) fn action_dump_pit(
 
     pollster::block_on(async {
         // Download PIT file from device.
-        let usb = match create_backend(usb_backend, verbose, wait).await {
+        let usb = match create_backend(usb_backend, wait).await {
             Ok(u) => u,
             Err(e) => {
                 print_error!("{}", e);
@@ -176,7 +179,7 @@ pub(crate) fn action_print_pit(
         set_progress(CliProgress::new(verbose));
 
         pollster::block_on(async {
-            let usb = match create_backend(usb_backend, verbose, wait).await {
+            let usb = match create_backend(usb_backend, wait).await {
                 Ok(u) => u,
                 Err(e) => {
                     print_error!("{}", e);
@@ -248,7 +251,8 @@ pub(crate) fn action_print_pit(
     }
 }
 
-pub(crate) fn action_reboot_download(usb_backend: UsbBackendOption, _verbose: bool) -> i32 {
+pub(crate) fn action_reboot_download(usb_backend: UsbBackendOption, verbose: bool) -> i32 {
+    set_progress(CliProgress::new(verbose));
     pollster::block_on(async {
         match samloader_odin::reboot_download(usb_backend).await {
             Ok(()) => 0,

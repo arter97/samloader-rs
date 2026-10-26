@@ -733,26 +733,24 @@ pub async fn reboot_download(usb_backend: crate::usb::UsbBackendOption) -> Resul
         crate::usb::UsbBackendOption::Vcom => {
             use crate::usb::{SerialBackend, UsbBackend};
             let device = SerialBackend::find_device(|vid, _| vid == VID_SAMSUNG).await?;
-            Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(
-                SerialBackend::new(device, false).await?,
-            ))
+            Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(SerialBackend::new(device).await?))
         }
         #[cfg(feature = "nusb")]
         crate::usb::UsbBackendOption::Nusb => {
             use crate::usb::{NusbBackend, UsbBackend};
             let device = NusbBackend::find_device(|vid, _| vid == VID_SAMSUNG).await?;
-            Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(NusbBackend::new(device, false).await?))
+            Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(NusbBackend::new(device).await?))
         }
         #[cfg(feature = "rusb")]
         crate::usb::UsbBackendOption::Libusb => {
             use crate::usb::{RusbBackend, UsbBackend};
             let device = RusbBackend::find_device(|vid, _| vid == VID_SAMSUNG).await?;
-            Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(RusbBackend::new(device, false).await?))
+            Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(RusbBackend::new(device).await?))
         }
         #[cfg(any(feature = "mock", debug_assertions))]
         crate::usb::UsbBackendOption::Mock => {
             use crate::usb::MockBackend;
-            Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(MockBackend::new(false)))
+            Ok::<Box<dyn UsbTransfer>, OdinError>(Box::new(MockBackend::new()))
         }
     }?;
 
@@ -770,7 +768,7 @@ pub async fn query_device_info(
     usb_backend: crate::usb::UsbBackendOption,
     wait: bool,
 ) -> Result<DeviceInfo, OdinError> {
-    let usb = crate::usb::create_backend(usb_backend, false, wait).await?;
+    let usb = crate::usb::create_backend(usb_backend, wait).await?;
     let mut conn = OdinConnection::new(usb);
     conn.query_device_info().await
 }
@@ -784,7 +782,7 @@ mod tests {
     #[test]
     fn test_odin_mock_multi_slice_transfer() {
         pollster::block_on(async {
-            let backend = Box::new(MockBackend::new(false));
+            let backend = Box::new(MockBackend::new());
             let mut connection = OdinConnection::new(backend);
             assert!(connection.init().await.is_ok());
             let mut session = connection.begin_session().await.unwrap();
@@ -828,7 +826,7 @@ mod tests {
     #[test]
     fn test_odin_mock_set_sales_code() {
         pollster::block_on(async {
-            let backend = Box::new(MockBackend::new(false));
+            let backend = Box::new(MockBackend::new());
             let mut connection = OdinConnection::new(backend);
             assert!(connection.init().await.is_ok());
             let mut session = connection.begin_session().await.unwrap();
@@ -855,27 +853,27 @@ mod tests {
 
     #[test]
     fn test_skip_empty_send_detection() {
-        let gadget = Box::new(MockBackend::new(false).with_product_name("Gadget Serial"));
+        let gadget = Box::new(MockBackend::new().with_product_name("Gadget Serial"));
         let conn_gadget = OdinConnection::new(gadget);
         assert!(!conn_gadget.skip_empty_send());
 
-        let gadget_prefix = Box::new(MockBackend::new(false).with_product_name("Gadget Serial v2"));
+        let gadget_prefix = Box::new(MockBackend::new().with_product_name("Gadget Serial v2"));
         let conn_gadget_prefix = OdinConnection::new(gadget_prefix);
         assert!(!conn_gadget_prefix.skip_empty_send());
 
-        let msm = Box::new(MockBackend::new(false).with_product_name("MSM8996"));
+        let msm = Box::new(MockBackend::new().with_product_name("MSM8996"));
         let conn_msm = OdinConnection::new(msm);
         assert!(conn_msm.skip_empty_send());
 
-        let apq = Box::new(MockBackend::new(false).with_product_name("APQ8084"));
+        let apq = Box::new(MockBackend::new().with_product_name("APQ8084"));
         let conn_apq = OdinConnection::new(apq);
         assert!(conn_apq.skip_empty_send());
 
-        let generic = Box::new(MockBackend::new(false).with_product_name("SAMSUNG_Android"));
+        let generic = Box::new(MockBackend::new().with_product_name("SAMSUNG_Android"));
         let conn_generic = OdinConnection::new(generic);
         assert!(conn_generic.skip_empty_send());
 
-        let none = Box::new(MockBackend::new(false));
+        let none = Box::new(MockBackend::new());
         let conn_none = OdinConnection::new(none);
         assert!(conn_none.skip_empty_send());
     }

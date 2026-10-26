@@ -742,7 +742,7 @@ mod tests {
         }
 
         pollster::block_on(async {
-            let backend = Box::new(MockBackend::new(false));
+            let backend = Box::new(MockBackend::new());
             let mut connection = OdinConnection::new(backend);
             connection.init().await.unwrap();
             let mut session = connection.begin_session().await.unwrap();
@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn test_flash_partitions_super_size_preflight_success() {
         pollster::block_on(async {
-            let backend = Box::new(MockBackend::new(false).with_protocol_version(3));
+            let backend = Box::new(MockBackend::new().with_protocol_version(3));
             let mut connection = OdinConnection::new(backend);
             connection.init().await.unwrap();
             let mut session = connection.begin_session().await.unwrap();
@@ -791,7 +791,7 @@ mod tests {
     fn test_flash_partitions_super_size_preflight_rejection() {
         pollster::block_on(async {
             let backend = Box::new(
-                MockBackend::new(false)
+                MockBackend::new()
                     .with_protocol_version(3)
                     .with_fail_check_super_size(-1),
             );
@@ -818,7 +818,7 @@ mod tests {
         pollster::block_on(async {
             // Even if fail_check_super_size is set, legacy protocol version 2 must skip opcode 0x6a
             let backend = Box::new(
-                MockBackend::new(false)
+                MockBackend::new()
                     .with_protocol_version(2)
                     .with_fail_check_super_size(-1),
             );
@@ -870,7 +870,7 @@ mod tests {
         }
 
         pollster::block_on(async {
-            let backend = Box::new(MockBackend::new(false));
+            let backend = Box::new(MockBackend::new());
             let mut connection = OdinConnection::new(backend);
             connection.init().await.unwrap();
             let mut session = connection.begin_session().await.unwrap();
@@ -891,7 +891,7 @@ mod tests {
     #[test]
     fn test_download_and_parse_pit_flashes_available_pit() {
         pollster::block_on(async {
-            let backend = Box::new(MockBackend::new(false));
+            let backend = Box::new(MockBackend::new());
             let mut connection = OdinConnection::new(backend);
             connection.init().await.unwrap();
             let mut session = connection.begin_session().await.unwrap();

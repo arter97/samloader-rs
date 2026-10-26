@@ -137,7 +137,7 @@ pub(crate) fn action_flash(
     set_progress(CliProgress::new(verbose));
 
     pollster::block_on(async {
-        let usb = match create_backend(usb_backend, verbose, wait).await {
+        let usb = match create_backend(usb_backend, wait).await {
             Ok(u) => u,
             Err(e) => {
                 print_error!("{}", e);

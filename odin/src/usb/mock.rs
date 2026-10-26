@@ -342,7 +342,6 @@ impl DeviceProfileBuilder {
 /// A mock USB/serial transport backend that implements the Loke-Odin protocol,
 /// capable of accurately simulating different Samsung device generations.
 pub struct MockBackend {
-    verbose: bool,
     profile: DeviceProfile,
     state: State,
     incoming_buffer: Vec<u8>,
@@ -364,26 +363,31 @@ pub struct MockBackend {
     empty_send_count: usize,
 }
 
+impl Default for MockBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[allow(dead_code)]
 impl MockBackend {
     /// Instantiates a new `MockBackend` configured with default `SM-F968B` characteristics.
     ///
     /// For 100% backward compatibility with existing tests, `protocol_version` defaults to 2.
-    pub fn new(verbose: bool) -> Self {
-        let mut backend = Self::with_profile(DeviceProfile::sm_f968b(), verbose);
+    pub fn new() -> Self {
+        let mut backend = Self::with_profile(DeviceProfile::sm_f968b());
         backend.protocol_version = 2;
         backend
     }
 
     /// Instantiates a new `MockBackend` configured with a specific `DeviceProfile`.
-    pub fn with_profile(profile: DeviceProfile, verbose: bool) -> Self {
+    pub fn with_profile(profile: DeviceProfile) -> Self {
         let active_pit = profile.default_pit.clone();
         let parsed_pit = PitData::new(&active_pit).ok();
         let default_packet = profile.default_packet_size;
         let p_ver = profile.protocol_version;
 
         Self {
-            verbose,
             profile,
             state: State::Uninitialized,
             incoming_buffer: Vec::new(),
@@ -476,12 +480,11 @@ impl MockBackend {
     }
 
     fn push_response(&mut self, response_type: u32, value: u32) {
-        if self.verbose {
-            eprintln!(
-                "MockBackend: queueing response: response_type = {:#04X?}, value = {}",
-                response_type, value
-            );
-        }
+        print_verbose!(
+            "MockBackend: queueing response: response_type = {:#04X?}, value = {}",
+            response_type,
+            value
+        );
         self.outgoing_queue.extend(&response_type.to_le_bytes());
         self.outgoing_queue.extend(&value.to_le_bytes());
     }
@@ -491,9 +494,7 @@ impl MockBackend {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl UsbTransfer for MockBackend {
     async fn reset(&mut self) {
-        if self.verbose {
-            eprintln!("MockBackend: connection reset");
-        }
+        print_verbose!("MockBackend: connection reset");
         self.state = State::Uninitialized;
         self.incoming_buffer.clear();
         self.outgoing_queue.clear();
@@ -512,20 +513,18 @@ impl UsbTransfer for MockBackend {
         match self.state {
             State::Uninitialized => {
                 if self.incoming_buffer == b"DVIF" {
-                    if self.verbose {
-                        eprintln!("MockBackend: Received DVIF query");
-                    }
+                    print_verbose!("MockBackend: Received DVIF query");
                     if self.profile.supports_dvif {
                         let dvif = self.profile.dvif_string();
                         self.outgoing_queue.extend(dvif.as_bytes());
-                    } else if self.verbose {
-                        eprintln!("MockBackend: DVIF not supported by device profile, ignoring");
+                    } else {
+                        print_verbose!(
+                            "MockBackend: DVIF not supported by device profile, ignoring"
+                        );
                     }
                     self.incoming_buffer.clear();
                 } else if self.incoming_buffer == b"ODIN" {
-                    if self.verbose {
-                        eprintln!("MockBackend: Handshake matching ODIN -> LOKE");
-                    }
+                    print_verbose!("MockBackend: Handshake matching ODIN -> LOKE");
                     self.state = State::HandshakeComplete;
                     self.outgoing_queue.extend(b"LOKE");
                     self.incoming_buffer.clear();
@@ -542,12 +541,11 @@ impl UsbTransfer for MockBackend {
                     && self.incoming_buffer.len() >= self.packet_size
                 {
                     let chunk_size = self.packet_size;
-                    if self.verbose {
-                        eprintln!(
-                            "MockBackend: Received chunk of {} bytes (idx: {})",
-                            chunk_size, self.current_chunk_index
-                        );
-                    }
+                    print_verbose!(
+                        "MockBackend: Received chunk of {} bytes (idx: {})",
+                        chunk_size,
+                        self.current_chunk_index
+                    );
                     if let Some(err) = self.fail_chunk {
                         self.push_response(STATUS_FAIL, err as u32);
                     } else {
@@ -596,9 +594,7 @@ impl UsbTransfer for MockBackend {
                 if self.incoming_buffer.len() >= 1024 {
                     let mut cursor = Cursor::new(&self.incoming_buffer[..1024]);
                     if let Ok(cmd) = Command::read_le(&mut cursor) {
-                        if self.verbose {
-                            eprintln!("MockBackend: Received command: {:?}", cmd);
-                        }
+                        print_verbose!("MockBackend: Received command: {:?}", cmd);
                         match cmd {
                             Command::Session(session_cmd) => match session_cmd {
                                 SessionCommand::Begin { protocol_version } => {
@@ -779,7 +775,7 @@ mod tests {
     fn test_sm_f968b_modern_profile_lifecycle() {
         pollster::block_on(async {
             let profile = DeviceProfile::sm_f968b();
-            let backend = Box::new(MockBackend::with_profile(profile, false));
+            let backend = Box::new(MockBackend::with_profile(profile));
             let mut connection = OdinConnection::new(backend);
 
             // 1. DVIF diagnostics prior to init
@@ -827,7 +823,7 @@ mod tests {
             assert!(!profile.lz4_supported);
             assert_eq!(profile.usb_product_name.as_deref(), Some("Gadget Serial"));
 
-            let backend = Box::new(MockBackend::with_profile(profile, false));
+            let backend = Box::new(MockBackend::with_profile(profile));
             let mut connection = OdinConnection::new(backend);
 
             // 1. DVIF is NOT supported on legacy S-Boot -> query_device_info returns DeviceInfoUnavailable

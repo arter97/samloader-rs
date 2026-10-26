@@ -76,7 +76,6 @@ async fn transfer_async<EpType: BulkOrInterrupt, Dir: EndpointDirection>(
 
 /// USB communication backend using `nusb`.
 pub struct NusbBackend {
-    verbose: bool,
     ep_in: ::nusb::Endpoint<::nusb::transfer::Bulk, ::nusb::transfer::In>,
     ep_out: ::nusb::Endpoint<::nusb::transfer::Bulk, ::nusb::transfer::Out>,
     product: Option<String>,
@@ -85,17 +84,17 @@ pub struct NusbBackend {
 impl NusbBackend {
     fn print_device_info(device: &::nusb::DeviceInfo) {
         if let Some(manufacturer) = device.manufacturer_string() {
-            eprintln!("      Manufacturer: \"{}\"", manufacturer);
+            print_verbose!("      Manufacturer: \"{}\"", manufacturer);
         }
         if let Some(product) = device.product_string() {
-            eprintln!("           Product: \"{}\"", product);
+            print_verbose!("           Product: \"{}\"", product);
         }
         if let Some(serial) = device.serial_number() {
-            eprintln!("         Serial No: \"{}\"", serial);
+            print_verbose!("         Serial No: \"{}\"", serial);
         }
 
-        eprintln!("\n      device class: {}", device.class());
-        eprintln!(
+        print_verbose!("\n      device class: {}", device.class());
+        print_verbose!(
             "           VID:PID: {:04X}:{:04X}",
             device.vendor_id(),
             device.product_id()
@@ -108,7 +107,7 @@ impl NusbBackend {
 impl UsbBackend for NusbBackend {
     type UsbDevice = ::nusb::DeviceInfo;
 
-    async fn new(device: Self::UsbDevice, verbose: bool) -> Result<Self, OdinError> {
+    async fn new(device: Self::UsbDevice) -> Result<Self, OdinError> {
         let handle = device
             .open()
             .await
@@ -152,9 +151,7 @@ impl UsbBackend for NusbBackend {
             return Err(OdinError::InterfaceConfigurationNotFound);
         }
 
-        if verbose {
-            Self::print_device_info(&device);
-        }
+        Self::print_device_info(&device);
 
         let interface = handle
             .detach_and_claim_interface(interface_index as u8)
@@ -178,7 +175,6 @@ impl UsbBackend for NusbBackend {
         let product = device.product_string().map(|s| s.to_string());
 
         Ok(Self {
-            verbose,
             ep_in,
             ep_out,
             product,
@@ -205,10 +201,10 @@ impl UsbBackend for NusbBackend {
 impl UsbTransfer for NusbBackend {
     async fn reset(&mut self) {
         if let Err(e) = self.ep_in.clear_halt().await {
-            print_warning!(self.verbose, "Failed to clear IN endpoint halt: {}", e);
+            print_warning!("Failed to clear IN endpoint halt: {}", e);
         }
         if let Err(e) = self.ep_out.clear_halt().await {
-            print_warning!(self.verbose, "Failed to clear OUT endpoint halt: {}", e);
+            print_warning!("Failed to clear OUT endpoint halt: {}", e);
         }
 
         #[cfg(not(target_arch = "wasm32"))]

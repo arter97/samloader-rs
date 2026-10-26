@@ -267,22 +267,29 @@ pub(crate) fn action_reboot_download(usb_backend: UsbBackendOption, verbose: boo
 pub(crate) fn action_verify_md5(files: &[String]) -> i32 {
     let mut success = true;
     set_progress(CliProgress::new(false));
-    for file_path in files {
-        let file = match File::open(file_path) {
-            Ok(f) => f,
-            Err(e) => {
-                print_error!("Failed to open file \"{}\": {}", file_path, e);
-                success = false;
-                continue;
-            }
-        };
+    pollster::block_on(async {
+        for file_path in files {
+            let file = match File::open(file_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    print_error!("Failed to open file \"{}\": {}", file_path, e);
+                    success = false;
+                    continue;
+                }
+            };
 
-        if let Err(e) = verify_md5_footer(&file, file_path) {
-            print_error!("MD5 verification failed for \"{}\": {}", file_path, e);
-            success = false;
+            if let Err(e) = verify_md5_footer(
+                samloader_odin::futures::io::AllowStdIo::new(&file),
+                file_path,
+            )
+            .await
+            {
+                print_error!("MD5 verification failed for \"{}\": {}", file_path, e);
+                success = false;
+            }
         }
-    }
-    if success { 0 } else { 1 }
+        if success { 0 } else { 1 }
+    })
 }
 
 #[cfg(target_os = "linux")]

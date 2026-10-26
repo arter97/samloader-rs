@@ -21,7 +21,7 @@ use crate::firmware::{
 use crate::lp::inspect_super_firmware_info;
 use crate::odin::OdinSession;
 use crate::progress::{self, FlashEvent};
-use futures::io::{AsyncRead, AsyncSeek, Cursor};
+use futures::io::{AllowStdIo, AsyncRead, AsyncSeek, Cursor};
 use memmap2::{Mmap, MmapOptions};
 use samloader_pit::{PitData, PitEntry};
 use std::collections::HashSet;
@@ -273,7 +273,7 @@ impl<'a> FlashManager<'a> {
         }
 
         // Step 2: Open packages and scan TAR containers to index entries
-        let opened_packages = self.open_and_verify_packages()?;
+        let opened_packages = self.open_and_verify_packages().await?;
         let resolved_entries = self.scan_tar_packages(&opened_packages)?;
 
         // Step 3: Flash PIT if available and download active PIT data from the device
@@ -314,7 +314,7 @@ impl<'a> FlashManager<'a> {
     }
 
     // Helper 1: Open TAR packages and optionally verify MD5 footers
-    fn open_and_verify_packages(&self) -> Result<Vec<(String, File)>, FlashError> {
+    async fn open_and_verify_packages(&self) -> Result<Vec<(String, File)>, FlashError> {
         if self.packages.is_empty() {
             return Ok(Vec::new());
         }
@@ -328,7 +328,8 @@ impl<'a> FlashManager<'a> {
         if !self.skip_md5 {
             for (pkg, file) in &mut opened_packages {
                 if pkg.to_lowercase().ends_with(".md5") {
-                    verify_md5_footer(&*file, pkg)
+                    verify_md5_footer(AllowStdIo::new(&*file), pkg)
+                        .await
                         .map_err(|e| FlashError::Md5VerificationFailed(pkg.clone(), e))?;
 
                     file.seek(SeekFrom::Start(0))

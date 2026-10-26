@@ -55,6 +55,7 @@ pub use usb::RusbBackend;
 pub use usb::SerialBackend;
 
 // Re-export public dependencies to avoid type mismatch and SemVer issues in public APIs.
+pub use futures;
 #[cfg(feature = "nusb")]
 pub use nusb;
 #[cfg(feature = "rusb")]

@@ -18,14 +18,17 @@ use futures::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
 use futures::stream::{self, Stream};
 use samloader_pit::PitEntry;
 use std::borrow::Cow;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, SeekFrom};
 
 // This is asserted by Lz4FrameHeader so the header size is always 15
 const LZ4_HEADER_SIZE: usize = 15;
 
 /// Verifies the trailing MD5 checksum appended to `.tar.md5` package files.
-pub fn verify_md5_footer<R: Read + Seek>(mut reader: R, name: &str) -> io::Result<()> {
-    let file_size = reader.seek(SeekFrom::End(0))?;
+pub async fn verify_md5_footer<R: AsyncRead + AsyncSeek + Unpin>(
+    mut reader: R,
+    name: &str,
+) -> io::Result<()> {
+    let file_size = reader.seek(SeekFrom::End(0)).await?;
 
     if file_size < 34 {
         return Err(io::Error::new(
@@ -38,9 +41,9 @@ pub fn verify_md5_footer<R: Read + Seek>(mut reader: R, name: &str) -> io::Resul
     // two blocks of zeroes, the last null byte (0x00) marks the exact boundary
     // between the TAR payload and the appended plain-text MD5 footer.
     let seek_pos = file_size.saturating_sub(512);
-    reader.seek(SeekFrom::Start(seek_pos))?;
+    reader.seek(SeekFrom::Start(seek_pos)).await?;
     let mut last_bytes = vec![0u8; (file_size - seek_pos) as usize];
-    reader.read_exact(&mut last_bytes)?;
+    reader.read_exact(&mut last_bytes).await?;
 
     // Find the last null byte (0x00)
     let mut last_null_idx = None;
@@ -86,16 +89,16 @@ pub fn verify_md5_footer<R: Read + Seek>(mut reader: R, name: &str) -> io::Resul
         size: payload_size,
     });
 
-    let res = (|| -> io::Result<()> {
+    let res: io::Result<()> = async {
         // Reset file pointer and compute MD5 over the payload only
-        reader.seek(SeekFrom::Start(0))?;
+        reader.seek(SeekFrom::Start(0)).await?;
         let mut hasher = Md5::new();
         let mut buffer = [0u8; 128 * 1024];
         let mut remaining = payload_size;
 
         while remaining > 0 {
             let to_read = std::cmp::min(remaining, buffer.len() as u64) as usize;
-            reader.read_exact(&mut buffer[..to_read])?;
+            reader.read_exact(&mut buffer[..to_read]).await?;
             hasher.update(&buffer[..to_read]);
             crate::progress::inc(to_read as u64);
             remaining -= to_read as u64;
@@ -110,7 +113,8 @@ pub fn verify_md5_footer<R: Read + Seek>(mut reader: R, name: &str) -> io::Resul
         }
 
         Ok(())
-    })();
+    }
+    .await;
 
     if res.is_err() {
         crate::progress::on_event(FlashEvent::Md5Fail(name));
@@ -460,8 +464,8 @@ mod tests {
     use super::*;
     use crate::FlashProgress;
     use fast_md5::Md5;
+    use futures::io::Cursor;
     use std::fmt::Write;
-    use std::io::Cursor;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -535,7 +539,7 @@ mod tests {
 
         let progress = TestProgress::new();
         crate::progress::set_progress(progress.clone());
-        let res = verify_md5_footer(Cursor::new(&data), "test.tar");
+        let res = pollster::block_on(verify_md5_footer(Cursor::new(&data), "test.tar"));
         crate::progress::clear_progress();
 
         assert!(res.is_ok());
@@ -566,7 +570,7 @@ mod tests {
 
         let progress = TestProgress::new();
         crate::progress::set_progress(progress.clone());
-        let res = verify_md5_footer(Cursor::new(&data), "test.tar");
+        let res = pollster::block_on(verify_md5_footer(Cursor::new(&data), "test.tar"));
         crate::progress::clear_progress();
 
         assert!(res.is_err());

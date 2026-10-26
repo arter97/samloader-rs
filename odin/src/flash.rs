@@ -21,6 +21,7 @@ use crate::firmware::{
 use crate::lp::inspect_super_firmware_info;
 use crate::odin::OdinSession;
 use crate::progress::{self, FlashEvent};
+use futures::io::{AsyncRead, AsyncSeek, Cursor};
 use memmap2::{Mmap, MmapOptions};
 use samloader_pit::{PitData, PitEntry};
 use std::collections::HashSet;
@@ -74,17 +75,16 @@ fn find_pit_entry_by_filename<'a>(pit_data: &'a PitData, filename: &str) -> Opti
     })
 }
 
-fn create_firmware_info<'a>(
-    mmap: Mmap,
+async fn create_firmware_info<'a, R: AsyncRead + AsyncSeek + Unpin>(
+    mut file: R,
     source_size: u64,
     is_lz4_suffix: bool,
     pit_entry: &'a PitEntry,
     skip_size_check: bool,
     file_display_name: &str,
-) -> Result<FirmwareInfo<'a>, FlashError> {
+) -> Result<FirmwareInfo<'a, R>, FlashError> {
     let lz4_frame_header = if is_lz4_suffix {
-        let cursor = std::io::Cursor::new(&mmap);
-        match Lz4FrameHeader::parse(cursor) {
+        match Lz4FrameHeader::parse(&mut file).await {
             Ok(fh) => Some(fh),
             Err(e) => {
                 return Err(FlashError::Lz4Header(file_display_name.to_string(), e));
@@ -112,13 +112,15 @@ fn create_firmware_info<'a>(
     if let Some(header) = lz4_frame_header {
         Ok(FirmwareInfo::Lz4(FirmwareLz4File {
             pit_entry,
-            file: mmap,
+            file,
+            size: source_size,
             header,
         }))
     } else {
         Ok(FirmwareInfo::Normal(FirmwareFile {
             pit_entry,
-            file: mmap,
+            file,
+            size: source_size,
         }))
     }
 }
@@ -278,16 +280,18 @@ impl<'a> FlashManager<'a> {
         let pit_data = self.download_and_parse_pit().await?;
 
         // Step 4: Map entries and individual files to FirmwareInfo payloads
-        let partition_infos = self.build_partition_infos(
-            &pit_data,
-            resolved_entries,
-            &self.partitions,
-            self.skip_size_check,
-        )?;
+        let mut partition_infos = self
+            .build_partition_infos(
+                &pit_data,
+                resolved_entries,
+                &self.partitions,
+                self.skip_size_check,
+            )
+            .await?;
 
         // Auto-detect super_used_size if not specified in TAR metadata
         if self.super_used_size.is_none()
-            && let Some(super_info) = partition_infos.iter().find(|info| {
+            && let Some(super_info) = partition_infos.iter_mut().find(|info| {
                 let entry = match info {
                     FirmwareInfo::Normal(f) => f.pit_entry,
                     FirmwareInfo::Lz4(f) => f.pit_entry,
@@ -299,7 +303,7 @@ impl<'a> FlashManager<'a> {
                         .eq_ignore_ascii_case("super.img")
             })
         {
-            self.super_used_size = inspect_super_firmware_info(super_info);
+            self.super_used_size = inspect_super_firmware_info(super_info).await;
         }
 
         // Step 5: Flash payloads to the device
@@ -485,13 +489,13 @@ impl<'a> FlashManager<'a> {
     }
 
     // Helper 4: Map package entries and individual files into FirmwareInfo
-    fn build_partition_infos<'c>(
+    async fn build_partition_infos<'c>(
         &self,
         pit_data: &'c PitData,
         resolved_entries: Vec<IndexedEntry<'_>>,
         partitions: &[(Option<String>, String)],
         skip_size_check: bool,
-    ) -> Result<Vec<FirmwareInfo<'c>>, FlashError> {
+    ) -> Result<Vec<FirmwareInfo<'c, Cursor<Mmap>>>, FlashError> {
         enum PartitionSource<'p> {
             Archive(IndexedEntry<'p>),
             File { path: String, is_lz4: bool },
@@ -589,13 +593,14 @@ impl<'a> FlashManager<'a> {
             };
 
             let info = create_firmware_info(
-                mmap,
+                Cursor::new(mmap),
                 file_size,
                 is_lz4,
                 planned.pit_entry,
                 skip_size_check,
                 &display_name,
-            )?;
+            )
+            .await?;
             unique_partition_infos.push(info);
         }
 
@@ -603,15 +608,15 @@ impl<'a> FlashManager<'a> {
     }
 
     // Helper 5: Flash deduplicated partition payloads to the device
-    async fn flash_partitions(
+    async fn flash_partitions<R: AsyncRead + AsyncSeek + Unpin>(
         &mut self,
-        partition_infos: Vec<FirmwareInfo<'_>>,
+        partition_infos: Vec<FirmwareInfo<'_, R>>,
         reboot_mode: RebootMode,
     ) -> Result<(), FlashError> {
         let total_bytes: u64 = partition_infos
             .iter()
             .map(|part| match part {
-                FirmwareInfo::Normal(f) => f.file.len() as u64,
+                FirmwareInfo::Normal(f) => f.size,
                 FirmwareInfo::Lz4(f) => f.header.content_size,
             })
             .sum();
@@ -641,7 +646,7 @@ impl<'a> FlashManager<'a> {
             };
 
             let partition_size = match &info {
-                FirmwareInfo::Normal(f) => f.file.len() as u64,
+                FirmwareInfo::Normal(f) => f.size,
                 FirmwareInfo::Lz4(f) => f.header.content_size,
             };
 
@@ -651,8 +656,8 @@ impl<'a> FlashManager<'a> {
             });
 
             let res = match info {
-                FirmwareInfo::Normal(f) => self.session.send_file(&f).await,
-                FirmwareInfo::Lz4(f) => self.session.send_lz4_file(&f).await,
+                FirmwareInfo::Normal(mut f) => self.session.send_file(&mut f).await,
+                FirmwareInfo::Lz4(mut f) => self.session.send_lz4_file(&mut f).await,
             };
 
             if let Err(e) = res {
@@ -772,7 +777,10 @@ mod tests {
 
             assert!(
                 manager
-                    .flash_partitions(Vec::new(), RebootMode::None)
+                    .flash_partitions(
+                        Vec::<FirmwareInfo<'_, Cursor<&[u8]>>>::new(),
+                        RebootMode::None
+                    )
                     .await
                     .is_ok()
             );
@@ -795,7 +803,12 @@ mod tests {
             manager.super_used_size = Some(27276104);
             manager.has_download_list = true;
 
-            let res = manager.flash_partitions(Vec::new(), RebootMode::None).await;
+            let res = manager
+                .flash_partitions(
+                    Vec::<FirmwareInfo<'_, Cursor<&[u8]>>>::new(),
+                    RebootMode::None,
+                )
+                .await;
             assert!(matches!(res, Err(FlashError::SuperSizeCheckFailed(_))));
         });
     }
@@ -819,7 +832,10 @@ mod tests {
 
             assert!(
                 manager
-                    .flash_partitions(Vec::new(), RebootMode::None)
+                    .flash_partitions(
+                        Vec::<FirmwareInfo<'_, Cursor<&[u8]>>>::new(),
+                        RebootMode::None
+                    )
                     .await
                     .is_ok()
             );

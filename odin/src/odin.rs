@@ -18,6 +18,9 @@ use crate::error::{LokeError, OdinError};
 use crate::progress;
 use crate::protocol::{CMD_PIT, Command, DataChunk, Response, STREAMING_CHUNK_ACK};
 use crate::usb::UsbTransfer;
+use futures::StreamExt;
+use futures::io::{AsyncRead, AsyncSeek};
+use futures::stream::Stream;
 use samloader_pit::PitEntry;
 use std::time::Duration;
 
@@ -537,22 +540,23 @@ impl OdinSession {
         self.bootloader_protocol_version
     }
 
-    async fn transmit_slices<Iter, Bytes>(
+    async fn transmit_slices<S, Bytes>(
         &mut self,
-        slices: Iter,
+        slices: S,
         pit_entry: &PitEntry,
     ) -> Result<(), OdinError>
     where
         Bytes: AsRef<[u8]>,
-        Iter: Iterator<Item = Bytes>,
+        S: Stream<Item = std::io::Result<Bytes>>,
     {
-        let mut slices = slices.peekable();
-        while let Some(slice_data) = slices.next() {
+        let mut slices = std::pin::pin!(slices.peekable());
+        while let Some(slice_data) = slices.next().await {
+            let slice_data = slice_data?;
             let slice_data = slice_data.as_ref();
             let init_cmd = Command::transmit_flash(false);
             let start_cmd = Command::start_slice_transmission(slice_data.len() as u32);
 
-            let is_last_slice = slices.peek().is_none();
+            let is_last_slice = slices.as_mut().peek().await.is_none();
             let end_cmd = Command::commit_slice(
                 slice_data.len() as u32,
                 pit_entry,
@@ -569,49 +573,52 @@ impl OdinSession {
     }
 
     /// Flashes an uncompressed partition firmware file payload to the device.
-    pub(crate) async fn send_file(
+    pub(crate) async fn send_file<R: AsyncRead + AsyncSeek + Unpin>(
         &mut self,
-        info: &crate::firmware::FirmwareFile<'_>,
+        info: &mut crate::firmware::FirmwareFile<'_, R>,
     ) -> Result<(), OdinError> {
-        progress::set_length(info.file.len() as u64);
+        let pit_entry = info.pit_entry;
+        progress::set_length(info.size);
         let slices = info.slices(MAX_SLICE_SIZE);
-        self.transmit_slices(slices, info.pit_entry).await
+        self.transmit_slices(slices, pit_entry).await
     }
 
     /// Flashes an LZ4-compressed partition firmware file payload to the device,
     /// decompressing on-the-fly if needed.
-    pub(crate) async fn send_lz4_file(
+    pub(crate) async fn send_lz4_file<R: AsyncRead + AsyncSeek + Unpin>(
         &mut self,
-        info: &crate::firmware::FirmwareLz4File<'_>,
+        info: &mut crate::firmware::FirmwareLz4File<'_, R>,
     ) -> Result<(), OdinError> {
+        let pit_entry = info.pit_entry;
         if !self.lz4_supported || info.header.block_max_size != 1024 * 1024 {
             progress::set_length(info.header.content_size);
             let slices = info.decompressed_slices(MAX_SLICE_SIZE);
-            return self.transmit_slices(slices, info.pit_entry).await;
+            return self.transmit_slices(slices, pit_entry).await;
         }
 
-        progress::set_length(info.file.len() as u64);
+        progress::set_length(info.size);
 
         let slices = info.slices(MAX_SLICE_SIZE);
 
-        let mut slices = slices.peekable();
-        while let Some((decompressed_size, slice_data)) = slices.next() {
+        let mut slices = std::pin::pin!(slices.peekable());
+        while let Some(slice_res) = slices.next().await {
+            let (decompressed_size, slice_data) = slice_res?;
             let init_cmd = Command::transmit_flash(true);
             let start_cmd = Command::start_lz4_slice_transmission(
                 slice_data.len() as u32,
                 decompressed_size as u32,
             );
 
-            let is_last_slice = slices.peek().is_none();
+            let is_last_slice = slices.as_mut().peek().await.is_none();
             let end_cmd = Command::commit_slice(
                 decompressed_size as u32,
-                info.pit_entry,
+                pit_entry,
                 is_last_slice,
                 true,
                 self.bootloader_protocol_version,
             );
 
-            self.transmit_slice(&init_cmd, &start_cmd, &end_cmd, slice_data)
+            self.transmit_slice(&init_cmd, &start_cmd, &end_cmd, &slice_data)
                 .await?;
         }
 
@@ -800,9 +807,19 @@ mod tests {
             // 2 slices of 128 KB each (matching MockBackend packet_size)
             let seq1 = vec![0xAAu8; 0x20000];
             let seq2 = vec![0xBBu8; 0x20000];
-            let slices = vec![seq1, seq2].into_iter();
+            let slices = futures::stream::iter(vec![Ok(seq1.clone()), Ok(seq2)]);
 
             assert!(session.transmit_slices(slices, &pit_entry).await.is_ok());
+
+            // Verify a mid-stream I/O error aborts the transfer with OdinError::Io
+            let failing_slices = futures::stream::iter(vec![
+                Ok(seq1),
+                Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
+            ]);
+            assert!(matches!(
+                session.transmit_slices(failing_slices, &pit_entry).await,
+                Err(OdinError::Io(_))
+            ));
 
             assert!(session.close().await.is_ok());
         });

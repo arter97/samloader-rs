@@ -16,6 +16,8 @@
 //! and sparse image containers to derive dynamic partition sizing.
 
 use crate::firmware::FirmwareInfo;
+use futures::StreamExt;
+use futures::io::{AsyncRead, AsyncSeek};
 
 const SPARSE_HEADER_MAGIC: u32 = 0xed26_ff3a;
 const CHUNK_RAW: u16 = 0xcac1;
@@ -32,11 +34,22 @@ const DECOMPRESS_PREFIX_LIMIT: usize = 512 * 1024;
 
 /// Inspects a [`FirmwareInfo`] representing a `SUPER` partition and attempts to
 /// parse the active linear extent sizes to determine the `super_used_size` in sectors.
-pub(crate) fn inspect_super_firmware_info(info: &FirmwareInfo<'_>) -> Option<u32> {
+pub(crate) async fn inspect_super_firmware_info<R: AsyncRead + AsyncSeek + Unpin>(
+    info: &mut FirmwareInfo<'_, R>,
+) -> Option<u32> {
     match info {
-        FirmwareInfo::Normal(f) => inspect_super_bytes(&f.file),
+        FirmwareInfo::Normal(f) => {
+            let prefix = std::pin::pin!(f.slices(DECOMPRESS_PREFIX_LIMIT))
+                .next()
+                .await?
+                .ok()?;
+            inspect_super_bytes(&prefix)
+        }
         FirmwareInfo::Lz4(f) => {
-            let decompressed = f.decompressed_slices(DECOMPRESS_PREFIX_LIMIT).next()?;
+            let decompressed = std::pin::pin!(f.decompressed_slices(DECOMPRESS_PREFIX_LIMIT))
+                .next()
+                .await?
+                .ok()?;
             inspect_super_bytes(&decompressed)
         }
     }

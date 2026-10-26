@@ -14,7 +14,8 @@
 
 use crate::progress::FlashEvent;
 use fast_md5::Md5;
-use memmap2::Mmap;
+use futures::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
+use futures::stream::{self, Stream};
 use samloader_pit::PitEntry;
 use std::borrow::Cow;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -129,11 +130,11 @@ pub(crate) struct Lz4FrameHeader {
 }
 
 impl Lz4FrameHeader {
-    /// Parses the LZ4 frame header from a reader.
-    pub(crate) fn parse<R: Read>(mut reader: R) -> io::Result<Self> {
-        let mut magic_bytes = [0u8; 4];
-        reader.read_exact(&mut magic_bytes)?;
-        let magic = u32::from_le_bytes(magic_bytes);
+    /// Parses the LZ4 frame header from an async reader.
+    pub(crate) async fn parse<R: AsyncRead + Unpin>(mut reader: R) -> io::Result<Self> {
+        let mut header = [0u8; LZ4_HEADER_SIZE];
+        reader.read_exact(&mut header).await?;
+        let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
 
         if magic != 0x184D2204 {
             // We only support the standard LZ4 frame magic in this context,
@@ -144,9 +145,7 @@ impl Lz4FrameHeader {
             ));
         }
 
-        let mut flg_byte = [0u8; 1];
-        reader.read_exact(&mut flg_byte)?;
-        let flg = flg_byte[0];
+        let flg = header[4];
 
         let version = (flg >> 6) & 0x03;
         if version != 1 {
@@ -186,9 +185,7 @@ impl Lz4FrameHeader {
             ));
         }
 
-        let mut bd_byte = [0u8; 1];
-        reader.read_exact(&mut bd_byte)?;
-        let bd = bd_byte[0];
+        let bd = header[5];
 
         let block_max_size_code = (bd >> 4) & 0x07;
         let block_max_size = match block_max_size_code {
@@ -204,12 +201,7 @@ impl Lz4FrameHeader {
             }
         };
 
-        let mut content_size_bytes = [0u8; 8];
-        reader.read_exact(&mut content_size_bytes)?;
-        let content_size = u64::from_le_bytes(content_size_bytes);
-
-        let mut hc_byte = [0u8; 1];
-        reader.read_exact(&mut hc_byte)?;
+        let content_size = u64::from_le_bytes(header[6..14].try_into().unwrap());
 
         Ok(Self {
             content_size,
@@ -218,113 +210,155 @@ impl Lz4FrameHeader {
     }
 }
 
-/// An uncompressed firmware file mapped in memory.
-pub(crate) struct FirmwareFile<'a> {
+/// An uncompressed firmware file payload.
+pub(crate) struct FirmwareFile<'a, R> {
     /// PIT partition entry associated with this file.
     pub(crate) pit_entry: &'a PitEntry,
-    /// Memory-mapped file content payload.
-    pub(crate) file: Mmap,
+    /// Asynchronous reader for the file content payload.
+    pub(crate) file: R,
+    /// Total size of the file in bytes.
+    pub(crate) size: u64,
 }
 
-impl<'a> FirmwareFile<'a> {
-    pub(crate) fn slices(&self, slice_max_bytes: usize) -> std::slice::Chunks<'_, u8> {
-        self.file.chunks(slice_max_bytes)
+impl<'a, R: AsyncRead + AsyncSeek + Unpin> FirmwareFile<'a, R> {
+    pub(crate) fn slices(
+        &mut self,
+        slice_max_bytes: usize,
+    ) -> impl Stream<Item = io::Result<Vec<u8>>> + '_ {
+        stream::unfold(
+            (&mut self.file, self.size, false),
+            move |(reader, mut remaining, mut started)| async move {
+                if remaining == 0 {
+                    return None;
+                }
+                if !started {
+                    if let Err(e) = reader.seek(SeekFrom::Start(0)).await {
+                        return Some((Err(e), (reader, 0, true)));
+                    }
+                    started = true;
+                }
+                let to_read = remaining.min(slice_max_bytes as u64) as usize;
+                let mut buffer = vec![0u8; to_read];
+                if let Err(e) = reader.read_exact(&mut buffer).await {
+                    return Some((Err(e), (reader, 0, started)));
+                }
+                remaining -= to_read as u64;
+                Some((Ok(buffer), (reader, remaining, started)))
+            },
+        )
     }
 }
 
-/// An LZ4-compressed firmware file mapped in memory.
-pub(crate) struct FirmwareLz4File<'a> {
+/// An LZ4-compressed firmware file payload.
+pub(crate) struct FirmwareLz4File<'a, R> {
     /// PIT partition entry associated with this file.
     pub(crate) pit_entry: &'a PitEntry,
-    /// Memory-mapped file content payload.
-    pub(crate) file: Mmap,
+    /// Asynchronous reader for the file content payload.
+    pub(crate) file: R,
+    /// Total size of the compressed file in bytes.
+    pub(crate) size: u64,
     /// Metadata header of the LZ4 frame.
     pub(crate) header: Lz4FrameHeader,
 }
 
-impl<'a> FirmwareLz4File<'a> {
-    pub(crate) fn slices(&self, slice_max_bytes: usize) -> Lz4SliceIterator<'_> {
-        Lz4SliceIterator {
-            file: &self.file,
+impl<'a, R: AsyncRead + AsyncSeek + Unpin> FirmwareLz4File<'a, R> {
+    pub(crate) fn slices(
+        &mut self,
+        slice_max_bytes: usize,
+    ) -> impl Stream<Item = io::Result<(usize, Vec<u8>)>> + '_ {
+        let iter = Lz4SliceIterator {
+            reader: &mut self.file,
             max_blocks: slice_max_bytes / (1024 * 1024),
             remaining_decompressed: self.header.content_size,
-            bytes_read: LZ4_HEADER_SIZE,
+            started: false,
             finished: false,
-        }
+        };
+        stream::unfold(iter, |mut it| async move {
+            it.next_slice().await.map(|item| (item, it))
+        })
     }
 
     pub(crate) fn decompressed_slices(
-        &self,
+        &mut self,
         slice_max_bytes: usize,
-    ) -> Lz4DecompressedSliceIterator<'_> {
-        Lz4DecompressedSliceIterator {
-            data: &self.file[LZ4_HEADER_SIZE..],
+    ) -> impl Stream<Item = io::Result<Vec<u8>>> + '_ {
+        let iter = Lz4DecompressedSliceIterator {
+            reader: &mut self.file,
             block_max_size: self.header.block_max_size as usize,
             slice_max_bytes,
             leftover: Vec::new(),
+            started: false,
             finished: false,
-        }
+        };
+        stream::unfold(iter, |mut it| async move {
+            it.next_slice().await.map(|item| (item, it))
+        })
     }
 }
 
 /// Enum wrapping a firmware file payload variant.
-pub(crate) enum FirmwareInfo<'a> {
+pub(crate) enum FirmwareInfo<'a, R> {
     /// Uncompressed normal firmware file payload.
-    Normal(FirmwareFile<'a>),
+    Normal(FirmwareFile<'a, R>),
     /// LZ4-compressed firmware file payload.
-    Lz4(FirmwareLz4File<'a>),
+    Lz4(FirmwareLz4File<'a, R>),
 }
 
-pub(crate) struct Lz4SliceIterator<'a> {
-    file: &'a [u8],
+struct Lz4SliceIterator<'r, R> {
+    reader: &'r mut R,
     max_blocks: usize,
     remaining_decompressed: u64,
-    bytes_read: usize,
+    started: bool,
     finished: bool,
 }
 
-impl<'a> Iterator for Lz4SliceIterator<'a> {
-    type Item = (usize, &'a [u8]);
+impl<'r, R: AsyncRead + AsyncSeek + Unpin> Lz4SliceIterator<'r, R> {
+    async fn next_slice(&mut self) -> Option<io::Result<(usize, Vec<u8>)>> {
+        match self.try_next_slice().await {
+            Ok(Some(slice)) => Some(Ok(slice)),
+            Ok(None) => None,
+            Err(e) => {
+                self.finished = true;
+                Some(Err(e))
+            }
+        }
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
+    async fn try_next_slice(&mut self) -> io::Result<Option<(usize, Vec<u8>)>> {
         if self.finished {
-            return None;
+            return Ok(None);
+        }
+        if !self.started {
+            self.reader
+                .seek(SeekFrom::Start(LZ4_HEADER_SIZE as u64))
+                .await?;
+            self.started = true;
         }
 
-        let start_pos = self.bytes_read;
-        let mut end_pos = start_pos;
+        let mut buffer = Vec::new();
         let mut num_blocks = 0;
 
         while num_blocks < self.max_blocks {
-            if self.bytes_read + 4 > self.file.len() {
-                self.finished = true;
-                break;
-            }
-            let block_size = u32::from_le_bytes(
-                self.file[self.bytes_read..self.bytes_read + 4]
-                    .try_into()
-                    .unwrap(),
-            );
+            let mut size_bytes = [0u8; 4];
+            self.reader.read_exact(&mut size_bytes).await?;
 
+            let block_size = u32::from_le_bytes(size_bytes);
             if block_size == 0 {
-                self.bytes_read += 4; // Advance past EndMark
                 self.finished = true;
                 break;
             }
 
             let data_size = (block_size & 0x7FFF_FFFF) as usize;
-            if self.bytes_read + 4 + data_size > self.file.len() {
-                self.finished = true;
-                break;
-            }
+            let start = buffer.len();
+            buffer.resize(start + 4 + data_size, 0);
+            buffer[start..start + 4].copy_from_slice(&size_bytes);
+            self.reader.read_exact(&mut buffer[start + 4..]).await?;
 
-            self.bytes_read += 4 + data_size;
-            end_pos = self.bytes_read;
             num_blocks += 1;
         }
 
-        if start_pos == end_pos {
-            return None;
+        if buffer.is_empty() {
+            return Ok(None);
         }
 
         let decompressed_size = std::cmp::min(
@@ -333,25 +367,42 @@ impl<'a> Iterator for Lz4SliceIterator<'a> {
         ) as usize;
         self.remaining_decompressed -= decompressed_size as u64;
 
-        Some((decompressed_size, &self.file[start_pos..end_pos]))
+        Ok(Some((decompressed_size, buffer)))
     }
 }
 
-/// Iterator that produces decompressed byte chunks from an LZ4 stream.
-pub(crate) struct Lz4DecompressedSliceIterator<'a> {
-    data: &'a [u8],
+/// Reader state that produces decompressed byte chunks from an LZ4 stream.
+struct Lz4DecompressedSliceIterator<'r, R> {
+    reader: &'r mut R,
     block_max_size: usize,
     slice_max_bytes: usize,
     leftover: Vec<u8>,
+    started: bool,
     finished: bool,
 }
 
-impl<'a> Iterator for Lz4DecompressedSliceIterator<'a> {
-    type Item = Vec<u8>;
+impl<'r, R: AsyncRead + AsyncSeek + Unpin> Lz4DecompressedSliceIterator<'r, R> {
+    async fn next_slice(&mut self) -> Option<io::Result<Vec<u8>>> {
+        match self.try_next_slice().await {
+            Ok(Some(slice)) => Some(Ok(slice)),
+            Ok(None) => None,
+            Err(e) => {
+                self.finished = true;
+                self.leftover.clear();
+                Some(Err(e))
+            }
+        }
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
+    async fn try_next_slice(&mut self) -> io::Result<Option<Vec<u8>>> {
         if self.finished && self.leftover.is_empty() {
-            return None;
+            return Ok(None);
+        }
+        if !self.started {
+            self.reader
+                .seek(SeekFrom::Start(LZ4_HEADER_SIZE as u64))
+                .await?;
+            self.started = true;
         }
 
         let mut buffer = Vec::with_capacity(self.slice_max_bytes);
@@ -360,14 +411,13 @@ impl<'a> Iterator for Lz4DecompressedSliceIterator<'a> {
         let take = self.slice_max_bytes.min(self.leftover.len());
         buffer.extend(self.leftover.drain(..take));
 
-        while buffer.len() < self.slice_max_bytes && !self.finished {
-            let Some((size_bytes, rest)) = self.data.split_first_chunk::<4>() else {
-                self.finished = true;
-                break;
-            };
-            self.data = rest;
+        let mut block_buf = Vec::new();
 
-            let block_size = u32::from_le_bytes(*size_bytes);
+        while buffer.len() < self.slice_max_bytes && !self.finished {
+            let mut size_bytes = [0u8; 4];
+            self.reader.read_exact(&mut size_bytes).await?;
+
+            let block_size = u32::from_le_bytes(size_bytes);
             if block_size == 0 {
                 // EndMark reached
                 self.finished = true;
@@ -376,22 +426,15 @@ impl<'a> Iterator for Lz4DecompressedSliceIterator<'a> {
 
             let is_uncompressed = (block_size & 0x8000_0000) != 0;
             let data_size = (block_size & 0x7FFF_FFFF) as usize;
-            let Some((block_data, rest)) = self.data.split_at_checked(data_size) else {
-                self.finished = true;
-                break;
-            };
-            self.data = rest;
+            block_buf.resize(data_size, 0);
+            self.reader.read_exact(&mut block_buf).await?;
 
             let decomp = if is_uncompressed {
-                Cow::Borrowed(block_data)
+                Cow::Borrowed(&block_buf[..])
             } else {
-                match lz4_flex::block::decompress(block_data, self.block_max_size) {
-                    Ok(decomp) => Cow::Owned(decomp),
-                    Err(_) => {
-                        self.finished = true;
-                        break;
-                    }
-                }
+                let decomp = lz4_flex::block::decompress(&block_buf, self.block_max_size)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                Cow::Owned(decomp)
             };
 
             let needed = self.slice_max_bytes - buffer.len();
@@ -405,9 +448,9 @@ impl<'a> Iterator for Lz4DecompressedSliceIterator<'a> {
         }
 
         if buffer.is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(buffer)
+            Ok(Some(buffer))
         }
     }
 }
@@ -529,5 +572,82 @@ mod tests {
         assert!(res.is_err());
         assert!(progress.failed.load(Ordering::Relaxed));
         assert!(!progress.ended.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_lz4_decompressed_slices_reseek_and_truncation() {
+        use futures::StreamExt;
+        use lz4_flex::frame::{BlockMode, BlockSize, FrameEncoder, FrameInfo};
+        use std::io::Write;
+
+        // 150 KB payload spanning 3 independent 64 KB LZ4 blocks (64K + 64K + 22K)
+        let original: Vec<u8> = (0..150 * 1024).map(|i| (i % 251) as u8).collect();
+
+        let mut frame_info = FrameInfo::new();
+        frame_info.block_mode = BlockMode::Independent;
+        frame_info.block_size = BlockSize::Max64KB;
+        frame_info.content_size = Some(original.len() as u64);
+
+        let mut encoder = FrameEncoder::with_frame_info(frame_info, Vec::new());
+        encoder.write_all(&original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let pit_entry = PitEntry {
+            binary_type: samloader_pit::BinaryType::ApplicationProcessor,
+            device_type: samloader_pit::DeviceType::MMC,
+            partition_id: 1,
+            attributes: Default::default(),
+            update_attributes: Default::default(),
+            start_block: 0,
+            block_count: 0,
+            file_offset: 0,
+            file_size: 0,
+            partition_name: Default::default(),
+            flash_filename: Default::default(),
+            fota_filename: Default::default(),
+        };
+
+        pollster::block_on(async {
+            let mut cursor = futures::io::Cursor::new(compressed.as_slice());
+            let header = Lz4FrameHeader::parse(&mut cursor).await.unwrap();
+            assert_eq!(header.content_size, original.len() as u64);
+            assert_eq!(header.block_max_size, 64 * 1024);
+
+            let mut lz4_file = FirmwareLz4File {
+                pit_entry: &pit_entry,
+                file: cursor,
+                size: compressed.len() as u64,
+                header,
+            };
+
+            // 1. Read a partial prefix and drop the stream (simulating inspect_super_firmware_info)
+            let prefix = std::pin::pin!(lz4_file.decompressed_slices(10 * 1024))
+                .next()
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(prefix, &original[..10 * 1024]);
+
+            // 2. Consume full stream with a 50 KB slice limit (unaligned with 64 KB blocks,
+            // exercising both SeekFrom::Start(LZ4_HEADER_SIZE) rewind and leftover buffering)
+            let mut reassembled = Vec::new();
+            {
+                let mut slices = std::pin::pin!(lz4_file.decompressed_slices(50 * 1024));
+                while let Some(res) = slices.next().await {
+                    let slice = res.unwrap();
+                    assert!(slice.len() <= 50 * 1024);
+                    reassembled.extend_from_slice(&slice);
+                }
+            }
+            assert_eq!(reassembled, original);
+
+            // 3. Truncated LZ4 stream must yield Err rather than silently ending with Ok
+            let truncated = &compressed[..compressed.len() - 10];
+            lz4_file.file = futures::io::Cursor::new(truncated);
+            lz4_file.size = truncated.len() as u64;
+            let results: Vec<io::Result<Vec<u8>>> =
+                lz4_file.decompressed_slices(50 * 1024).collect().await;
+            assert!(results.iter().any(|r| r.is_err()));
+        });
     }
 }

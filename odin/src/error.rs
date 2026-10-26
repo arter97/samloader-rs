@@ -127,6 +127,10 @@ pub enum OdinError {
     /// Invalid sales code provided (must be 3 ASCII alphanumeric characters).
     #[error("Invalid sales code \"{0}\": must be 3 alphanumeric ASCII characters (e.g. BTU, XAA)")]
     InvalidSalesCode(String),
+
+    /// An I/O error occurred while reading or decompressing firmware data.
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Detailed error status reported by the Samsung LOKE bootloader.

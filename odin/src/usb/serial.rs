@@ -86,86 +86,49 @@ impl UsbTransfer for SerialBackend {
         }
     }
 
-    async fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
+    async fn send_data(&mut self, data: &[u8], timeout: i32) -> bool {
         if let Err(e) = self.port.set_timeout(Duration::from_millis(timeout as u64)) {
             print_warning!("Failed to set serial port timeout: {}", e);
         }
 
         let mut written = 0;
-        let max_attempts = if retry { 6 } else { 1 };
-
-        for attempt in 0..max_attempts {
-            if attempt > 0 {
-                print_verbose!(" Retrying (written {}/{})...", written, data.len());
-                futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
-            }
-
-            while written < data.len() {
-                match self.port.write(&data[written..]) {
-                    Ok(0) => {
-                        if retry {
-                            print_warning!("Serial write returned 0 bytes written");
-                        }
-                        break;
-                    }
-                    Ok(n) => {
-                        written += n;
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                        continue;
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                        if retry {
-                            print_warning!("Serial write timed out: {}", e);
-                        }
-                        break;
-                    }
-                    Err(e) => {
-                        if retry {
-                            print_warning!("Serial error whilst sending transfer: {}", e);
-                        }
-                        break;
-                    }
+        while written < data.len() {
+            match self.port.write(&data[written..]) {
+                Ok(0) => {
+                    print_warning!("Serial write returned 0 bytes written");
+                    return false;
                 }
-            }
-
-            if written == data.len() {
-                let _ = self.port.flush();
-                return true;
+                Ok(n) => {
+                    written += n;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    continue;
+                }
+                Err(e) => {
+                    print_warning!("Serial error whilst sending transfer: {}", e);
+                    return false;
+                }
             }
         }
 
-        false
+        let _ = self.port.flush();
+        true
     }
 
-    async fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
+    async fn receive_data(&mut self, data: &mut [u8], timeout: i32) -> i32 {
         if let Err(e) = self.port.set_timeout(Duration::from_millis(timeout as u64)) {
             print_warning!("Failed to set serial port timeout: {}", e);
         }
 
-        let max_attempts = if retry { 6 } else { 1 };
-
-        for attempt in 0..max_attempts {
-            if attempt > 0 {
-                print_verbose!(" Retrying...");
-                futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
-            }
-
-            match self.port.read(data) {
-                Ok(bytes_read) => {
-                    return bytes_read as i32;
+        match self.port.read(data) {
+            Ok(bytes_read) => bytes_read as i32,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::TimedOut {
+                    print_warning!("Serial error whilst receiving transfer: {}", e);
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                    // Timed out, retry if allowed
-                }
-                Err(e) => {
-                    if retry {
-                        print_warning!("Serial error whilst receiving transfer: {}", e);
-                    }
-                }
+                -1
             }
         }
-        -1
     }
 
     fn product_name(&self) -> Option<&str> {

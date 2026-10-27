@@ -212,62 +212,32 @@ impl UsbTransfer for RusbBackend {
         }
     }
 
-    async fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
-        let max_attempts = if retry { 6 } else { 1 };
-        for attempt in 0..max_attempts {
-            if attempt > 0 {
-                print_verbose!(" Retrying...");
-                futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
-            }
-
-            let result = self.handle.write_bulk(
-                self.out_endpoint,
-                data,
-                Duration::from_millis(timeout as u64),
-            );
-
-            if let Ok(transferred) = result {
-                return transferred == data.len();
-            };
-
-            if retry {
-                print_warning!(
-                    "libusb error {} whilst sending bulk transfer.",
-                    result.as_ref().unwrap_err()
-                );
+    async fn send_data(&mut self, data: &[u8], timeout: i32) -> bool {
+        match self.handle.write_bulk(
+            self.out_endpoint,
+            data,
+            Duration::from_millis(timeout as u64),
+        ) {
+            Ok(transferred) => transferred == data.len(),
+            Err(e) => {
+                print_warning!("libusb error {} whilst sending bulk transfer.", e);
+                false
             }
         }
-
-        false
     }
 
-    async fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
-        let max_attempts = if retry { 6 } else { 1 };
-
-        for attempt in 0..max_attempts {
-            if attempt > 0 {
-                print_verbose!(" Retrying...");
-                futures_timer::Delay::new(Duration::from_millis(250 * attempt)).await;
-            }
-
-            let result = self.handle.read_bulk(
-                self.in_endpoint,
-                data,
-                Duration::from_millis(timeout as u64),
-            );
-
-            if let Ok(transferred) = result {
-                return transferred as i32;
-            };
-
-            if retry {
-                print_warning!(
-                    "libusb error {} whilst receiving bulk transfer.",
-                    result.as_ref().unwrap_err()
-                );
+    async fn receive_data(&mut self, data: &mut [u8], timeout: i32) -> i32 {
+        match self.handle.read_bulk(
+            self.in_endpoint,
+            data,
+            Duration::from_millis(timeout as u64),
+        ) {
+            Ok(transferred) => transferred as i32,
+            Err(e) => {
+                print_warning!("libusb error {} whilst receiving bulk transfer.", e);
+                -1
             }
         }
-        -1
     }
 
     fn product_name(&self) -> Option<&str> {

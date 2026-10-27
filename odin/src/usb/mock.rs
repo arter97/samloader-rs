@@ -502,7 +502,7 @@ impl UsbTransfer for MockBackend {
         self.packet_size = self.profile.default_packet_size;
     }
 
-    async fn send_data(&mut self, data: &[u8], _timeout: i32, _retry: bool) -> bool {
+    async fn send_data(&mut self, data: &[u8], _timeout: i32) -> bool {
         if data.is_empty() {
             self.empty_send_count += 1;
             return true;
@@ -746,7 +746,7 @@ impl UsbTransfer for MockBackend {
         true
     }
 
-    async fn receive_data(&mut self, data: &mut [u8], _timeout: i32, _retry: bool) -> i32 {
+    async fn receive_data(&mut self, data: &mut [u8], _timeout: i32) -> i32 {
         if self.outgoing_queue.is_empty() {
             return 0;
         }

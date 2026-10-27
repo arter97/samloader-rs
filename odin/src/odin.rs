@@ -100,7 +100,7 @@ impl OdinConnection {
     /// Sends a raw string message over the transport connection.
     pub async fn send_string(&mut self, s: &str, timeout: i32) -> Result<(), OdinError> {
         progress::println_verbose(&format!("Sending string: {:?}", s));
-        if !self.usb.send_data(s.as_bytes(), timeout, true).await {
+        if !self.usb.send_data(s.as_bytes(), timeout).await {
             return Err(OdinError::SendCommandFailed);
         }
         Ok(())
@@ -109,7 +109,7 @@ impl OdinConnection {
     /// Receives a raw string message from the transport connection.
     pub async fn receive_string(&mut self, timeout: i32) -> Result<String, OdinError> {
         let mut buffer = [0u8; 1024];
-        let received_size = self.usb.receive_data(&mut buffer, timeout, true).await;
+        let received_size = self.usb.receive_data(&mut buffer, timeout).await;
 
         if received_size < 0 {
             return Err(OdinError::ReceivePacketFailed);
@@ -129,12 +129,12 @@ impl OdinConnection {
     /// Can be called prior to `init()` to inspect the device without opening an Odin session.
     pub async fn query_device_info(&mut self) -> Result<DeviceInfo, OdinError> {
         progress::println_verbose("Querying device info via DVIF...");
-        if !self.usb.send_data(b"DVIF", 1000, false).await {
+        if !self.usb.send_data(b"DVIF", 1000).await {
             return Err(OdinError::SendCommandFailed);
         }
 
         let mut buffer = [0u8; 1024];
-        let received_size = self.usb.receive_data(&mut buffer, 1000, false).await;
+        let received_size = self.usb.receive_data(&mut buffer, 1000).await;
         if received_size <= 0 {
             return Err(OdinError::DeviceInfoUnavailable);
         }
@@ -243,11 +243,7 @@ impl OdinSession {
         // sent by the bootloader before resetting (required on devices such as A55).
         // Any timeout or disconnect error is ignored since the device is rebooting.
         let mut buffer = [0u8; 64];
-        let _ = self
-            .connection
-            .usb
-            .receive_data(&mut buffer, 100, false)
-            .await;
+        let _ = self.connection.usb.receive_data(&mut buffer, 100).await;
 
         Ok(())
     }
@@ -266,16 +262,11 @@ impl OdinSession {
     async fn send_command(&mut self, cmd: &Command, timeout: i32) -> Result<(), ()> {
         progress::println_verbose(&format!("Sending command: {:#04X?}", cmd));
         let cmd_bytes = cmd.pack();
-        if !self
-            .connection
-            .usb
-            .send_data(&cmd_bytes, timeout, true)
-            .await
-        {
+        if !self.connection.usb.send_data(&cmd_bytes, timeout).await {
             return Err(());
         }
         if !self.connection.skip_empty_send {
-            self.connection.usb.send_data(&[], 100, false).await;
+            self.connection.usb.send_data(&[], 100).await;
         }
         Ok(())
     }
@@ -283,12 +274,7 @@ impl OdinSession {
     async fn send_chunk(&mut self, chunk: &DataChunk<'_>, timeout: i32) -> Result<(), ()> {
         progress::println_verbose(&format!("Sending chunk: {:#04X?}", chunk));
         let chunk_bytes = chunk.as_bytes();
-        if !self
-            .connection
-            .usb
-            .send_data(&chunk_bytes, timeout, true)
-            .await
-        {
+        if !self.connection.usb.send_data(&chunk_bytes, timeout).await {
             return Err(());
         }
         Ok(())
@@ -296,19 +282,11 @@ impl OdinSession {
 
     async fn receive_response(&mut self, timeout: i32) -> Result<Response, OdinError> {
         let mut buffer = [0u8; Response::SIZE];
-        let mut received_size = self
-            .connection
-            .usb
-            .receive_data(&mut buffer, timeout, true)
-            .await;
+        let mut received_size = self.connection.usb.receive_data(&mut buffer, timeout).await;
 
         // Mirror odin4: if 0 bytes received (a ZLP was received), read again
         if received_size == 0 {
-            received_size = self
-                .connection
-                .usb
-                .receive_data(&mut buffer, timeout, true)
-                .await;
+            received_size = self.connection.usb.receive_data(&mut buffer, timeout).await;
         }
 
         if received_size < 0 {
@@ -431,7 +409,7 @@ impl OdinSession {
             let received = self
                 .connection
                 .usb
-                .receive_data(&mut chunk[..expected_size], 3000, true)
+                .receive_data(&mut chunk[..expected_size], 3000)
                 .await;
             if received < 0 {
                 return Err(OdinError::ReceivePacketFailed);
@@ -442,10 +420,7 @@ impl OdinSession {
         // Receive empty packet after the last PIT transfer,
         // this is required for some older devices e.g. Tab S2 VE.
         let mut empty = [0u8; 1];
-        self.connection
-            .usb
-            .receive_data(&mut empty, 100, false)
-            .await;
+        self.connection.usb.receive_data(&mut empty, 100).await;
 
         // End file transfer
         let cmd = Command::pit_end();
@@ -482,7 +457,7 @@ impl OdinSession {
             let received = self
                 .connection
                 .usb
-                .receive_data(&mut chunk[..expected_size], 3000, false)
+                .receive_data(&mut chunk[..expected_size], 3000)
                 .await;
             if received < 0 {
                 return Err(OdinError::ReceivePacketFailed);
@@ -643,45 +618,41 @@ impl OdinSession {
         }
 
         for (chunk_index, chunk_buffer) in slice_data.chunks(self.packet_size).enumerate() {
-            let mut success = false;
-            for retry in 0..5 {
-                if retry > 0 {
-                    progress::println("\nRetrying...");
-                }
+            let chunk = DataChunk::new(chunk_buffer, self.packet_size);
 
-                let chunk = DataChunk::new(chunk_buffer, self.packet_size);
+            self.send_chunk(&chunk, 3000)
+                .await
+                .map_err(|_| OdinError::SendCommandFailed)?;
 
-                if self.send_chunk(&chunk, 3000).await.is_err() {
-                    continue;
-                }
+            let response = self
+                .receive_response(self.slice_timeout as i32)
+                .await
+                .map_err(|_| OdinError::ChunkResponseReceiveFailed)?;
 
-                if let Ok(response) = self.receive_response(self.slice_timeout as i32).await {
-                    if response.is_fail() {
-                        return Err(OdinError::Loke(LokeError::from_status(
-                            response.signed_value(),
-                        )));
-                    }
-                    if response.response_type == STREAMING_CHUNK_ACK {
-                        if response.signed_value() < 0 {
-                            return Err(OdinError::Loke(LokeError::from_status(
-                                response.signed_value(),
-                            )));
-                        }
-                        if response.value as usize == chunk_index {
-                            success = true;
-                            break;
-                        } else if retry == 0 {
-                            return Err(OdinError::ChunkIndexMismatch {
-                                expected: chunk_index,
-                                received: response.value,
-                            });
-                        }
-                    }
-                }
+            if response.is_fail() {
+                return Err(OdinError::Loke(LokeError::from_status(
+                    response.signed_value(),
+                )));
             }
 
-            if !success {
-                return Err(OdinError::ChunkResponseReceiveFailed);
+            if response.response_type != STREAMING_CHUNK_ACK {
+                return Err(OdinError::ResponseTypeMismatch {
+                    expected: STREAMING_CHUNK_ACK,
+                    received: response.response_type,
+                });
+            }
+
+            if response.signed_value() < 0 {
+                return Err(OdinError::Loke(LokeError::from_status(
+                    response.signed_value(),
+                )));
+            }
+
+            if response.value as usize != chunk_index {
+                return Err(OdinError::ChunkIndexMismatch {
+                    expected: chunk_index,
+                    received: response.value,
+                });
             }
 
             progress::inc(chunk_buffer.len() as u64);
@@ -756,7 +727,7 @@ pub async fn reboot_download(usb_backend: crate::usb::UsbBackendOption) -> Resul
 
     let cmd: &[u8] = b"AT+SUDDLMOD=0,0\r";
 
-    if !backend.send_data(cmd, 1000, false).await {
+    if !backend.send_data(cmd, 1000).await {
         return Err(OdinError::SerialError("Failed to send data".to_string()));
     }
 
@@ -893,11 +864,11 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
     impl UsbTransfer for SpyTransfer {
         async fn reset(&mut self) {}
-        async fn send_data(&mut self, data: &[u8], _timeout: i32, _retry: bool) -> bool {
+        async fn send_data(&mut self, data: &[u8], _timeout: i32) -> bool {
             self.inner.lock().unwrap().sent_data.push(data.to_vec());
             true
         }
-        async fn receive_data(&mut self, data: &mut [u8], _timeout: i32, _retry: bool) -> i32 {
+        async fn receive_data(&mut self, data: &mut [u8], _timeout: i32) -> i32 {
             let mut inner = self.inner.lock().unwrap();
             if let Some(packet) = inner.read_queue.pop_front() {
                 let len = std::cmp::min(data.len(), packet.len());

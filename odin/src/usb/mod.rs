@@ -78,9 +78,9 @@ pub trait UsbTransfer: MaybeSend {
     /// Resets the transport connection state and buffers.
     async fn reset(&mut self);
     /// Sends a buffer of data across the transport with a timeout.
-    async fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool;
+    async fn send_data(&mut self, data: &[u8], timeout: i32) -> bool;
     /// Receives data from the transport into a buffer, returning the number of bytes read.
-    async fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32;
+    async fn receive_data(&mut self, data: &mut [u8], timeout: i32) -> i32;
     /// Returns the USB Product descriptor string if available.
     fn product_name(&self) -> Option<&str> {
         None

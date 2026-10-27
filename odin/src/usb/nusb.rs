@@ -283,71 +283,52 @@ impl UsbTransfer for NusbBackend {
         }
     }
 
-    async fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
-        let max_attempts = if retry { 6 } else { 1 };
+    async fn send_data(&mut self, data: &[u8], timeout: i32) -> bool {
         let timeout_duration = Duration::from_millis(timeout as u64);
         #[cfg(target_arch = "wasm32")]
-        let mut submitted = false;
-
-        for attempt in 0..max_attempts {
-            if attempt > 0 {
-                Delay::new(Duration::from_millis(250 * attempt)).await;
-            }
-            #[cfg(target_arch = "wasm32")]
-            if !submitted && self.ep_out.pending() > 0 {
-                let _ = wait_pending(&mut self.ep_out, timeout_duration).await;
-                if self.ep_out.pending() > 0 {
-                    continue;
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                submitted = true;
-            }
-            let buf = Buffer::from(data.to_vec());
-            let completion = transfer_async(&mut self.ep_out, buf, timeout_duration).await;
-            if completion.status.is_ok() {
-                return completion.actual_len == data.len();
+        if self.ep_out.pending() > 0 {
+            let _ = wait_pending(&mut self.ep_out, timeout_duration).await;
+            if self.ep_out.pending() > 0 {
+                return false;
             }
         }
-        false
+        let buf = Buffer::from(data.to_vec());
+        let completion = transfer_async(&mut self.ep_out, buf, timeout_duration).await;
+        completion.status.is_ok() && completion.actual_len == data.len()
     }
 
-    async fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
-        let max_attempts = if retry { 6 } else { 1 };
+    async fn receive_data(&mut self, data: &mut [u8], timeout: i32) -> i32 {
         let timeout_duration = Duration::from_millis(timeout as u64);
         let max_packet_size = self.ep_in.max_packet_size().max(1);
         let requested_len = data.len().max(1).next_multiple_of(max_packet_size);
         let mut total_copied = 0;
 
-        for attempt in 0..max_attempts {
-            if attempt > 0 {
-                Delay::new(Duration::from_millis(250 * attempt)).await;
-            }
-            loop {
-                let rem_req_len = (requested_len - total_copied).max(max_packet_size);
-                let buf = Buffer::new(rem_req_len);
-                let completion = transfer_async(&mut self.ep_in, buf, timeout_duration).await;
-                let Ok(()) = completion.status else {
-                    break;
+        loop {
+            let rem_req_len = (requested_len - total_copied).max(max_packet_size);
+            let buf = Buffer::new(rem_req_len);
+            let completion = transfer_async(&mut self.ep_in, buf, timeout_duration).await;
+            let Ok(()) = completion.status else {
+                return if total_copied > 0 {
+                    total_copied as i32
+                } else {
+                    -1
                 };
-                let to_copy = std::cmp::min(completion.actual_len, data.len() - total_copied);
-                data[total_copied..total_copied + to_copy]
-                    .copy_from_slice(&completion.buffer[..to_copy]);
-                total_copied += to_copy;
+            };
+            let to_copy = std::cmp::min(completion.actual_len, data.len() - total_copied);
+            data[total_copied..total_copied + to_copy]
+                .copy_from_slice(&completion.buffer[..to_copy]);
+            total_copied += to_copy;
 
-                let prev_req_len = completion.buffer.requested_len();
-                if prev_req_len < rem_req_len
-                    && completion.actual_len == prev_req_len
-                    && total_copied < data.len()
-                {
-                    continue;
-                }
-
-                return total_copied as i32;
+            let prev_req_len = completion.buffer.requested_len();
+            if prev_req_len < rem_req_len
+                && completion.actual_len == prev_req_len
+                && total_copied < data.len()
+            {
+                continue;
             }
+
+            return total_copied as i32;
         }
-        -1
     }
 
     fn product_name(&self) -> Option<&str> {

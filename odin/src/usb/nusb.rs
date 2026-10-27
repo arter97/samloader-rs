@@ -23,10 +23,11 @@ use futures_timer::Delay;
 
 struct TransferFuture<'a, EpType: BulkOrInterrupt, Dir: EndpointDirection> {
     ep: &'a mut ::nusb::Endpoint<EpType, Dir>,
-    #[cfg(not(target_arch = "wasm32"))]
     delay: Delay,
     #[cfg(not(target_arch = "wasm32"))]
     cancelled: bool,
+    #[cfg(target_arch = "wasm32")]
+    pending_buf: Option<Buffer>,
 }
 
 impl<'a, EpType: BulkOrInterrupt, Dir: EndpointDirection> Future
@@ -52,24 +53,69 @@ impl<'a, EpType: BulkOrInterrupt, Dir: EndpointDirection> Future
         }
         #[cfg(target_arch = "wasm32")]
         {
-            this.ep.poll_next_complete(cx)
+            if let Poll::Ready(completion) = this.ep.poll_next_complete(cx) {
+                if completion.status.is_err()
+                    && let Some(buf) = this.pending_buf.take()
+                {
+                    this.ep.submit(buf);
+                    if let Poll::Ready(completion) = this.ep.poll_next_complete(cx) {
+                        return Poll::Ready(completion);
+                    }
+                } else {
+                    return Poll::Ready(completion);
+                }
+            }
+            this.pending_buf = None;
+            if Pin::new(&mut this.delay).poll(cx).is_ready() {
+                return Poll::Ready(Completion {
+                    buffer: Buffer::new(0),
+                    actual_len: 0,
+                    status: Err(::nusb::transfer::TransferError::Cancelled),
+                });
+            }
+            Poll::Pending
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn wait_pending<EpType: BulkOrInterrupt, Dir: EndpointDirection>(
+    ep: &mut ::nusb::Endpoint<EpType, Dir>,
+    timeout: Duration,
+) -> Completion {
+    TransferFuture {
+        ep,
+        delay: Delay::new(timeout),
+        pending_buf: None,
+    }
+    .await
 }
 
 async fn transfer_async<EpType: BulkOrInterrupt, Dir: EndpointDirection>(
     ep: &mut ::nusb::Endpoint<EpType, Dir>,
     buf: Buffer,
-    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] timeout: Duration,
+    timeout: Duration,
 ) -> Completion {
-    assert_eq!(ep.pending(), 0, "a transfer is already pending");
-    ep.submit(buf);
+    #[cfg(not(target_arch = "wasm32"))]
+    let submit_now = {
+        assert_eq!(ep.pending(), 0, "a transfer is already pending");
+        true
+    };
+    #[cfg(target_arch = "wasm32")]
+    let submit_now = ep.pending() == 0;
+
+    let mut pending_buf = Some(buf);
+    if submit_now && let Some(b) = pending_buf.take() {
+        ep.submit(b);
+    }
+
     TransferFuture {
         ep,
-        #[cfg(not(target_arch = "wasm32"))]
         delay: Delay::new(timeout),
         #[cfg(not(target_arch = "wasm32"))]
         cancelled: false,
+        #[cfg(target_arch = "wasm32")]
+        pending_buf,
     }
     .await
 }
@@ -207,6 +253,16 @@ impl UsbTransfer for NusbBackend {
             print_warning!("Failed to clear OUT endpoint halt: {}", e);
         }
 
+        #[cfg(target_arch = "wasm32")]
+        {
+            if self.ep_in.pending() > 0 {
+                let _ = wait_pending(&mut self.ep_in, Duration::from_millis(10)).await;
+            }
+            if self.ep_out.pending() > 0 {
+                let _ = wait_pending(&mut self.ep_out, Duration::from_millis(10)).await;
+            }
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             let max_packet_size = self.ep_in.max_packet_size();
@@ -229,13 +285,27 @@ impl UsbTransfer for NusbBackend {
 
     async fn send_data(&mut self, data: &[u8], timeout: i32, retry: bool) -> bool {
         let max_attempts = if retry { 6 } else { 1 };
+        let timeout_duration = Duration::from_millis(timeout as u64);
+        #[cfg(target_arch = "wasm32")]
+        let mut submitted = false;
+
         for attempt in 0..max_attempts {
             if attempt > 0 {
                 Delay::new(Duration::from_millis(250 * attempt)).await;
             }
+            #[cfg(target_arch = "wasm32")]
+            if !submitted && self.ep_out.pending() > 0 {
+                let _ = wait_pending(&mut self.ep_out, timeout_duration).await;
+                if self.ep_out.pending() > 0 {
+                    continue;
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                submitted = true;
+            }
             let buf = Buffer::from(data.to_vec());
-            let completion =
-                transfer_async(&mut self.ep_out, buf, Duration::from_millis(timeout as u64)).await;
+            let completion = transfer_async(&mut self.ep_out, buf, timeout_duration).await;
             if completion.status.is_ok() {
                 return completion.actual_len == data.len();
             }
@@ -245,22 +315,36 @@ impl UsbTransfer for NusbBackend {
 
     async fn receive_data(&mut self, data: &mut [u8], timeout: i32, retry: bool) -> i32 {
         let max_attempts = if retry { 6 } else { 1 };
+        let timeout_duration = Duration::from_millis(timeout as u64);
+        let max_packet_size = self.ep_in.max_packet_size().max(1);
+        let requested_len = data.len().max(1).next_multiple_of(max_packet_size);
+        let mut total_copied = 0;
+
         for attempt in 0..max_attempts {
             if attempt > 0 {
                 Delay::new(Duration::from_millis(250 * attempt)).await;
             }
-            let max_packet_size = self.ep_in.max_packet_size();
-            let mut requested_len = data.len();
-            if !requested_len.is_multiple_of(max_packet_size) {
-                requested_len = ((requested_len / max_packet_size) + 1) * max_packet_size;
-            }
-            let buf = Buffer::new(requested_len);
-            let completion =
-                transfer_async(&mut self.ep_in, buf, Duration::from_millis(timeout as u64)).await;
-            if let Ok(()) = completion.status {
-                let to_copy = std::cmp::min(completion.actual_len, data.len());
-                data[..to_copy].copy_from_slice(&completion.buffer[..to_copy]);
-                return to_copy as i32;
+            loop {
+                let rem_req_len = (requested_len - total_copied).max(max_packet_size);
+                let buf = Buffer::new(rem_req_len);
+                let completion = transfer_async(&mut self.ep_in, buf, timeout_duration).await;
+                let Ok(()) = completion.status else {
+                    break;
+                };
+                let to_copy = std::cmp::min(completion.actual_len, data.len() - total_copied);
+                data[total_copied..total_copied + to_copy]
+                    .copy_from_slice(&completion.buffer[..to_copy]);
+                total_copied += to_copy;
+
+                let prev_req_len = completion.buffer.requested_len();
+                if prev_req_len < rem_req_len
+                    && completion.actual_len == prev_req_len
+                    && total_copied < data.len()
+                {
+                    continue;
+                }
+
+                return total_copied as i32;
             }
         }
         -1
